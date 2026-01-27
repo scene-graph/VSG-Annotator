@@ -1,0 +1,204 @@
+"""Video routes for listing videos and serving frames."""
+
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.config import settings
+from backend.core.vsg_loader import VSGLoader
+from backend.models.database import Video, get_db
+from backend.models.schemas import NodeResponse, VideoDetail, VideoSummary
+from backend.services.video_service import VideoService
+
+router = APIRouter(prefix="/videos", tags=["videos"])
+
+
+@router.get("", response_model=list[VideoSummary])
+async def list_videos(
+    db: AsyncSession = Depends(get_db),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    dataset: Optional[str] = Query(None, description="Filter by dataset"),
+):
+    """List all imported videos."""
+    query = select(Video)
+
+    if status is not None:
+        query = query.where(Video.status == status)
+    if dataset is not None:
+        query = query.where(Video.dataset == dataset)
+
+    result = await db.execute(query)
+    videos = result.scalars().all()
+
+    summaries = []
+    for video in videos:
+        # Load VSG to get counts
+        loader = VSGLoader(video.vsg_path)
+
+        summaries.append(
+            VideoSummary(
+                id=video.id,
+                video_id=video.video_id,
+                dataset=video.dataset,
+                status=video.status,
+                total_frames=video.total_frames,
+                fps=video.fps,
+                resolution={
+                    "width": video.resolution_width,
+                    "height": video.resolution_height,
+                }
+                if video.resolution_width
+                else None,
+                node_count=len(loader.get_static_nodes()) + len(loader.get_dynamic_nodes()),
+                edge_count=(
+                    len(loader.get_static_edges())
+                    + len(loader.get_dynamic_edges())
+                    + len(loader.get_fg_bg_edges())
+                ),
+            )
+        )
+
+    return summaries
+
+
+@router.get("/{video_id}", response_model=VideoDetail)
+async def get_video(video_id: str, db: AsyncSession = Depends(get_db)):
+    """Get detailed information about a video."""
+    result = await db.execute(select(Video).where(Video.video_id == video_id))
+    video = result.scalar_one_or_none()
+
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+
+    # Load VSG
+    loader = VSGLoader(video.vsg_path)
+    summary = loader.get_summary()
+
+    return VideoDetail(
+        id=video.id,
+        video_id=video.video_id,
+        dataset=video.dataset,
+        status=video.status,
+        total_frames=video.total_frames,
+        fps=video.fps,
+        resolution={
+            "width": video.resolution_width,
+            "height": video.resolution_height,
+        }
+        if video.resolution_width
+        else None,
+        vsg_path=video.vsg_path,
+        frames_path=video.frames_path,
+        masks_path=video.masks_path,
+        node_count=summary["static_node_count"] + summary["dynamic_node_count"],
+        edge_count=(
+            summary["static_edge_count"]
+            + summary["dynamic_edge_count"]
+            + summary["fg_bg_edge_count"]
+        ),
+        static_node_count=summary["static_node_count"],
+        dynamic_node_count=summary["dynamic_node_count"],
+        static_edge_count=summary["static_edge_count"],
+        dynamic_edge_count=summary["dynamic_edge_count"],
+        fg_bg_edge_count=summary["fg_bg_edge_count"],
+    )
+
+
+@router.get("/{video_id}/frame/{frame_idx}")
+async def get_frame(
+    video_id: str,
+    frame_idx: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a specific frame image."""
+    result = await db.execute(select(Video).where(Video.video_id == video_id))
+    video = result.scalar_one_or_none()
+
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+
+    service = VideoService(video.frames_path)
+    frame_path = service.get_frame_path(frame_idx)
+
+    if frame_path is None or not frame_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Frame {frame_idx} not found for video {video_id}",
+        )
+
+    return FileResponse(
+        frame_path,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@router.get("/{video_id}/nodes", response_model=list[NodeResponse])
+async def get_nodes(
+    video_id: str,
+    db: AsyncSession = Depends(get_db),
+    is_static: Optional[bool] = Query(None, description="Filter by static/dynamic"),
+    frame: Optional[int] = Query(None, description="Filter by frame (nodes visible at frame)"),
+):
+    """Get all nodes for a video with their tracking data."""
+    result = await db.execute(select(Video).where(Video.video_id == video_id))
+    video = result.scalar_one_or_none()
+
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+
+    loader = VSGLoader(video.vsg_path)
+    nodes = list(loader.get_all_nodes().values())
+
+    # Filter by static/dynamic
+    if is_static is not None:
+        nodes = [n for n in nodes if n.is_static == is_static]
+
+    # Filter by frame
+    if frame is not None:
+        frame_str = str(frame)
+        nodes = [n for n in nodes if frame_str in n.bboxes_by_frame]
+
+    return nodes
+
+
+@router.get("/{video_id}/nodes/{node_id}", response_model=NodeResponse)
+async def get_node(
+    video_id: str,
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a specific node by ID."""
+    result = await db.execute(select(Video).where(Video.video_id == video_id))
+    video = result.scalar_one_or_none()
+
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+
+    loader = VSGLoader(video.vsg_path)
+    node = loader.get_node_by_id(node_id)
+
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+
+    return node
+
+
+@router.get("/{video_id}/metadata")
+async def get_metadata(
+    video_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get VSG metadata for a video."""
+    result = await db.execute(select(Video).where(Video.video_id == video_id))
+    video = result.scalar_one_or_none()
+
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+
+    loader = VSGLoader(video.vsg_path)
+    return loader.metadata
