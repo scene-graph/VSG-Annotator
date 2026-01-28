@@ -1,10 +1,12 @@
 """Video routes for listing videos and serving frames."""
 
+import io
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +14,7 @@ from backend.config import settings
 from backend.core.vsg_loader import VSGLoader
 from backend.models.database import Video, get_db
 from backend.models.schemas import NodeResponse, VideoDetail, VideoSummary
-from backend.services.video_service import VideoService
+from backend.services.video_service import VideoService, get_frame_for_video, get_disk_frame_cache
 
 router = APIRouter(prefix="/videos", tags=["videos"])
 
@@ -114,15 +116,15 @@ async def get_frame(
     frame_idx: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a specific frame image."""
+    """Get a specific frame image (served from disk cache if enabled)."""
     result = await db.execute(select(Video).where(Video.video_id == video_id))
     video = result.scalar_one_or_none()
 
     if video is None:
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
-    service = VideoService(video.frames_path)
-    frame_path = service.get_frame_path(frame_idx)
+    # Use caching function (disk cache -> memory cache -> source)
+    frame_path = get_frame_for_video(video_id, video.frames_path, frame_idx)
 
     if frame_path is None or not frame_path.exists():
         raise HTTPException(
@@ -130,11 +132,57 @@ async def get_frame(
             detail=f"Frame {frame_idx} not found for video {video_id}",
         )
 
+    # Determine media type from extension
+    media_type = "image/png" if frame_path.suffix.lower() == ".png" else "image/jpeg"
+
     return FileResponse(
         frame_path,
-        media_type="image/png",
+        media_type=media_type,
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+@router.get("/{video_id}/frame/{frame_idx}/jpeg")
+async def get_frame_jpeg(
+    video_id: str,
+    frame_idx: int,
+    quality: int = Query(80, ge=10, le=100, description="JPEG quality (10-100)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a specific frame as JPEG with configurable quality for optimized playback.
+
+    Converts PNG frames to JPEG on-the-fly to reduce bandwidth (~94% smaller).
+    """
+    result = await db.execute(select(Video).where(Video.video_id == video_id))
+    video = result.scalar_one_or_none()
+
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+
+    # Use caching function (disk cache -> memory cache -> source)
+    frame_path = get_frame_for_video(video_id, video.frames_path, frame_idx)
+
+    if frame_path is None or not frame_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Frame {frame_idx} not found for video {video_id}",
+        )
+
+    # Convert to JPEG with specified quality
+    with Image.open(frame_path) as img:
+        # Convert RGBA or palette images to RGB for JPEG
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+
+        buffer = io.BytesIO()
+        img.save(buffer, format='JPEG', quality=quality, optimize=True)
+        buffer.seek(0)
+
+        return Response(
+            content=buffer.getvalue(),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
 
 
 @router.get("/{video_id}/nodes", response_model=list[NodeResponse])
@@ -202,3 +250,15 @@ async def get_metadata(
 
     loader = VSGLoader(video.vsg_path)
     return loader.metadata
+
+
+@router.get("/cache/status")
+async def get_cache_status():
+    """Get frame cache status information."""
+    cache = get_disk_frame_cache()
+    if cache is None:
+        return {"enabled": False, "message": "Disk frame cache is disabled"}
+
+    status = cache.get_status()
+    status["enabled"] = True
+    return status

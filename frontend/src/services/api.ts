@@ -50,6 +50,10 @@ export const videosApi = {
     return `${API_BASE}/videos/${videoId}/frame/${frameIdx}`;
   },
 
+  getJpegFrameUrl: (videoId: string, frameIdx: number, quality: number = 80): string => {
+    return `${API_BASE}/videos/${videoId}/frame/${frameIdx}/jpeg?quality=${quality}`;
+  },
+
   getNodes: (videoId: string, isStatic?: boolean, frame?: number): Promise<Node[]> => {
     const params = new URLSearchParams();
     if (isStatic !== undefined) params.set('is_static', String(isStatic));

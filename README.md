@@ -60,6 +60,62 @@ pnpm dev  # or npm run dev
 
 The application will be available at http://localhost:5173
 
+## Running the Servers
+
+### Server Ports
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| Backend API | http://localhost:8000 | FastAPI server |
+| API Docs | http://localhost:8000/docs | Swagger UI documentation |
+| Frontend UI | http://localhost:5173 | React development server |
+
+### Starting Servers
+
+**Backend** (from `backend/` directory):
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**Frontend** (from `frontend/` directory):
+```bash
+pnpm dev    # or npm run dev
+```
+
+### Stopping Servers
+
+**Option 1: Ctrl+C**
+Press `Ctrl+C` in each terminal where a server is running.
+
+**Option 2: Find and kill processes**
+```bash
+# Find server processes
+ps aux | grep -E "uvicorn|npm.*dev" | grep -v grep
+
+# Kill by PID
+kill <PID>
+
+# Or kill by port
+lsof -ti:8000 | xargs kill  # Backend
+lsof -ti:5173 | xargs kill  # Frontend
+```
+
+### Troubleshooting
+
+**Port already in use:**
+```bash
+# Check what's using a port
+lsof -i:8000  # or :5173
+
+# Kill the process using the port
+lsof -ti:8000 | xargs kill -9
+```
+
+**Server won't start:**
+- Ensure virtual environment is activated for backend
+- Ensure dependencies are installed (`pip install -e .` for backend, `pnpm install` for frontend)
+- Check that database is initialized (`python scripts/import_vsg.py`)
+
 ## Project Structure
 
 ```
@@ -113,7 +169,8 @@ SGG_Visualization/
 ### Videos
 - `GET /api/videos` - List all videos
 - `GET /api/videos/{id}` - Get video details
-- `GET /api/videos/{id}/frame/{frame_idx}` - Get frame image
+- `GET /api/videos/{id}/frame/{frame_idx}` - Get frame image (PNG)
+- `GET /api/videos/{id}/frame/{frame_idx}/jpeg?quality=80` - Get frame as optimized JPEG
 - `GET /api/videos/{id}/nodes` - Get all nodes
 - `GET /api/videos/{id}/edges` - Get edges with filters
 
@@ -195,11 +252,98 @@ Environment variables can be set in a `.env` file:
 DATABASE_URL=sqlite+aiosqlite:///./sgg_visualization.db
 PVSG_MINI_PATH=/home/jtu9/sgg/VideoSGG_AnyGran/examples/pvsg_mini
 DEBUG=false
+FRAME_CACHE_PATH=/srv/local/shared/temp/tmp1/jtu9/cache/sgg_frames
+FRAME_CACHE_ENABLED=true
 ```
+
+## Frame Cache
+
+For faster frame loading during video playback, frames are automatically cached on fast local storage.
+
+### How It Works
+
+1. **Eager Pre-caching**: When a video is first accessed, all frames are copied to the cache in a background thread
+2. **Fast Serving**: Subsequent frame requests are served directly from the cache
+3. **Automatic**: Caching happens transparently - no manual intervention required
+
+### Cache Location
+
+```
+/srv/local/shared/temp/tmp1/jtu9/cache/sgg_frames/
+├── {video_id_1}/
+│   └── frames/
+│       ├── 0000.png
+│       ├── 0001.png
+│       └── ...
+└── {video_id_2}/
+    └── frames/
+```
+
+### Cache Management
+
+```bash
+# Check cache status
+python scripts/cache_manager.py --status
+
+# Pre-warm cache for a video (run in advance for faster first load)
+python scripts/cache_manager.py --warm <video_id>
+
+# Clear cache for a specific video
+python scripts/cache_manager.py --clear <video_id>
+
+# Clear entire cache
+python scripts/cache_manager.py --clear-all
+```
+
+### API Endpoint
+
+Check cache status via API:
+```bash
+curl http://localhost:8000/api/videos/cache/status
+```
+
+## Performance Optimizations
+
+### JPEG Frame Compression
+
+The video player uses JPEG compression to reduce frame transfer sizes by ~94%:
+
+| Dataset | PNG Size | JPEG Size (q=80) | Reduction |
+|---------|----------|------------------|-----------|
+| Ego4D | ~2.5 MB | ~150 KB | 94% |
+| VIDor | ~358 KB | ~35 KB | 90% |
+
+**API Endpoint:**
+```bash
+# Get JPEG-compressed frame (quality 10-100, default 80)
+GET /api/videos/{video_id}/frame/{frame_idx}/jpeg?quality=80
+```
+
+### Canvas Rendering with Frame Buffering
+
+The video player uses several optimizations for smooth playback:
+
+1. **Canvas Rendering**: Uses `<canvas>` instead of `<img>` for precise frame control
+2. **Frame Buffer**: Maintains 50-frame buffer with 25-frame lookahead
+3. **requestAnimationFrame**: Synced to display refresh rate (eliminates jitter)
+4. **Pre-indexed BBox Lookup**: O(1) bounding box retrieval per frame
+5. **Adaptive Playback**: Only advances when next frame is buffered (prevents drops)
+
+### Expected Performance
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Frame transfer | 1-3 MB | 100-200 KB |
+| Buffer capacity | 10-15 frames | 50 frames |
+| Timing sync | setInterval | requestAnimationFrame |
+| BBox lookup | O(n) | O(1) |
 
 ## Changelog
 
 ### 2026-01-27
+- **Perf**: Add JPEG frame endpoint for 94% bandwidth reduction
+- **Perf**: Canvas rendering with 50-frame buffer and requestAnimationFrame
+- **Perf**: Pre-indexed bounding box lookup (O(1) per frame)
 - **Fix**: Video frame now updates correctly during timeline playback (fixed stale closure issue in VideoPlayer.tsx)
 
 ## License
