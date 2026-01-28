@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     api_prefix: str = "/api"
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
+    # Frame Cache
+    frame_cache_path: Path = Path("/srv/local/shared/temp/tmp1/jtu9/cache/sgg_frames")
+    frame_cache_enabled: bool = True
+
     # Pagination
     default_page_size: int = 50
     max_page_size: int = 200
