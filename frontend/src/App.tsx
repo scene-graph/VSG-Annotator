@@ -5,6 +5,7 @@ import { useAppStore, useFilters, useCurrentUser } from './store';
 import { videosApi, edgesApi, usersApi } from './services/api';
 import { useVideos, useVideo, useNodes, useEdges } from './hooks';
 import { VideoPlayer } from './components/VideoPlayer';
+import { TrackletTimeline } from './components/TrackletTimeline';
 import { EdgeTimeline } from './components/EdgeTimeline';
 import { EdgeReview } from './components/EdgeReview';
 import { Filters } from './components/Filters';
@@ -158,7 +159,7 @@ function VideoAnnotation() {
         {/* Left column: Video + Timeline */}
         <div className="flex-1 flex flex-col gap-4 min-w-0">
           {/* Video player */}
-          <div className="h-[50%] min-h-[300px]">
+          <div className="h-[45%] min-h-[280px]">
             <VideoPlayer
               videoId={video.video_id}
               totalFrames={video.total_frames || 100}
@@ -168,12 +169,21 @@ function VideoAnnotation() {
             />
           </div>
 
-          {/* Timeline */}
-          <div className="flex-1 min-h-[200px]">
+          {/* Tracklet Timeline */}
+          <div className="min-h-[120px] max-h-[180px]">
+            <TrackletTimeline
+              nodes={nodes}
+              totalFrames={video.total_frames || 100}
+              height={160}
+            />
+          </div>
+
+          {/* Edge Timeline */}
+          <div className="flex-1 min-h-[180px]">
             <EdgeTimeline
               edges={edges}
               totalFrames={video.total_frames || 100}
-              height={250}
+              height={220}
             />
           </div>
         </div>
