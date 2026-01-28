@@ -39,9 +39,11 @@ interface AppState {
   showValidationReasoning: boolean;
   setShowValidationReasoning: (show: boolean) => void;
 
-  // Highlighted nodes (for bbox overlay)
-  highlightedNodes: string[];
-  setHighlightedNodes: (nodeIds: string[]) => void;
+  // Source/Target nodes (for bbox overlay differentiation)
+  sourceNodes: string[];
+  targetNodes: string[];
+  setSourceNodes: (nodeIds: string[]) => void;
+  setTargetNodes: (nodeIds: string[]) => void;
 }
 
 const initialFilters: EdgeFilters = {};
@@ -66,13 +68,13 @@ export const useAppStore = create<AppState>((set) => ({
   // Selected edge
   selectedEdge: null,
   setSelectedEdge: (edge) => {
-    // When selecting an edge, also highlight source/target nodes
+    // When selecting an edge, track source and target nodes separately
     if (edge) {
       const sources = Array.isArray(edge.source) ? edge.source : [edge.source];
       const targets = Array.isArray(edge.target) ? edge.target : [edge.target];
-      set({ selectedEdge: edge, highlightedNodes: [...sources, ...targets] });
+      set({ selectedEdge: edge, sourceNodes: sources, targetNodes: targets });
     } else {
-      set({ selectedEdge: null, highlightedNodes: [] });
+      set({ selectedEdge: null, sourceNodes: [], targetNodes: [] });
     }
   },
 
@@ -96,9 +98,11 @@ export const useAppStore = create<AppState>((set) => ({
   showValidationReasoning: true,
   setShowValidationReasoning: (show) => set({ showValidationReasoning: show }),
 
-  // Highlighted nodes
-  highlightedNodes: [],
-  setHighlightedNodes: (nodeIds) => set({ highlightedNodes: nodeIds }),
+  // Source/Target nodes
+  sourceNodes: [],
+  targetNodes: [],
+  setSourceNodes: (nodeIds) => set({ sourceNodes: nodeIds }),
+  setTargetNodes: (nodeIds) => set({ targetNodes: nodeIds }),
 }));
 
 // Selectors
@@ -109,4 +113,5 @@ export const useEdges = () => useAppStore((state) => state.edges);
 export const useSelectedEdge = () => useAppStore((state) => state.selectedEdge);
 export const useFilters = () => useAppStore((state) => state.filters);
 export const useCurrentUser = () => useAppStore((state) => state.currentUser);
-export const useHighlightedNodes = () => useAppStore((state) => state.highlightedNodes);
+export const useSourceNodes = () => useAppStore((state) => state.sourceNodes);
+export const useTargetNodes = () => useAppStore((state) => state.targetNodes);

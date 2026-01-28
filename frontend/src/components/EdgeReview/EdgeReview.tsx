@@ -139,23 +139,42 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
         <div className="bg-gray-700 rounded p-3">
           <div className="flex items-center gap-2 mb-2">
             <div className="flex-1">
-              <div className="text-gray-400 text-xs uppercase mb-1">Source</div>
+              <div className="text-xs uppercase mb-1" style={{ color: '#00d4ff' }}>Source</div>
               <div className="text-white text-sm">
                 {sourceCategories.map((cat, i) => (
-                  <span key={sources[i]} className="inline-block bg-gray-600 px-2 py-1 rounded mr-1 mb-1">
+                  <span
+                    key={sources[i]}
+                    className="inline-block px-2 py-1 rounded mr-1 mb-1 border"
+                    style={{
+                      backgroundColor: 'rgba(0, 212, 255, 0.15)',
+                      borderColor: '#00d4ff',
+                    }}
+                  >
+                    <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: '#00d4ff' }} />
                     {cat} <span className="text-gray-400">({sources[i]})</span>
                   </span>
                 ))}
               </div>
             </div>
-            <div className="text-orange-400 font-semibold px-3">
+            <div className="text-orange-400 font-semibold px-3 text-center">
+              <svg className="w-5 h-5 mx-auto mb-1 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
               {selectedEdge.predicate}
             </div>
             <div className="flex-1 text-right">
-              <div className="text-gray-400 text-xs uppercase mb-1">Target</div>
+              <div className="text-xs uppercase mb-1" style={{ color: '#ff00d4' }}>Target</div>
               <div className="text-white text-sm">
                 {targetCategories.map((cat, i) => (
-                  <span key={targets[i]} className="inline-block bg-gray-600 px-2 py-1 rounded mr-1 mb-1">
+                  <span
+                    key={targets[i]}
+                    className="inline-block px-2 py-1 rounded mr-1 mb-1 border"
+                    style={{
+                      backgroundColor: 'rgba(255, 0, 212, 0.15)',
+                      borderColor: '#ff00d4',
+                    }}
+                  >
+                    <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: '#ff00d4' }} />
                     {cat} <span className="text-gray-400">({targets[i]})</span>
                   </span>
                 ))}
