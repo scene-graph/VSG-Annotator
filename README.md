@@ -2,6 +2,31 @@
 
 Video Scene Graph Edge Annotation & Visualization System - A web-based tool for human reviewers to visualize, validate, and revise AI-generated video scene graph edges.
 
+## TL;DR (Quick Start)
+
+**1. Configure** (create `.env` in project root):
+```env
+PVSG_MINI_PATH=/path/to/your/video/data
+FRAME_CACHE_PATH=/path/to/cache           # optional, for faster playback
+```
+
+**2. Install & Run**:
+```bash
+# Backend
+pip install -e .
+python scripts/import_vsg.py
+cd backend && uvicorn main:app --reload --port 8000
+
+# Frontend (new terminal)
+cd frontend && pnpm install && pnpm dev
+```
+
+**3. Open**: http://localhost:5173
+
+See [Configuration](#configuration) for all options and [Data Directory Structure](#data-directory-structure) for video file layout.
+
+---
+
 ## Table of Contents
 
 - [Features](#features)
