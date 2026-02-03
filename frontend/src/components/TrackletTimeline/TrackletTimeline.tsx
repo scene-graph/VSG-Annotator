@@ -37,6 +37,32 @@ function getTrackletRange(node: Node): { start: number; end: number } {
   };
 }
 
+// Find contiguous segments where the object has bboxes
+function getContiguousSegments(node: Node): Array<{ start: number; end: number }> {
+  const frames = Object.keys(node.bboxes_by_frame).map(Number).sort((a, b) => a - b);
+  if (frames.length === 0) return [];
+
+  const segments: Array<{ start: number; end: number }> = [];
+  let segStart = frames[0];
+  let segEnd = frames[0];
+
+  for (let i = 1; i < frames.length; i++) {
+    if (frames[i] === segEnd + 1) {
+      // Contiguous frame
+      segEnd = frames[i];
+    } else {
+      // Gap detected - save current segment and start new one
+      segments.push({ start: segStart, end: segEnd });
+      segStart = frames[i];
+      segEnd = frames[i];
+    }
+  }
+  // Don't forget last segment
+  segments.push({ start: segStart, end: segEnd });
+
+  return segments;
+}
+
 export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletTimelineProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -56,6 +82,7 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
     return [...nodes]
       .map((node) => ({
         node,
+        segments: getContiguousSegments(node),
         range: getTrackletRange(node),
       }))
       .sort((a, b) => {
@@ -226,12 +253,9 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         .text(`Frame ${tooltipFrame}`);
     }
 
-    // Draw tracklet bars
-    sortedNodes.forEach(({ node, range }, i) => {
+    // Draw tracklet bars (with contiguous segments)
+    sortedNodes.forEach(({ node, segments }, i) => {
       const y = MARGIN.top + i * (LANE_HEIGHT + LANE_PADDING);
-      const startX = xScale(range.start);
-      const endX = xScale(range.end);
-      const barWidth = Math.max(endX - startX, 2);
 
       const isSource = sourceNodes.includes(node.node_id);
       const isTarget = targetNodes.includes(node.node_id);
@@ -278,48 +302,53 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         .attr('font-weight', isHighlighted ? 'bold' : 'normal')
         .text(label);
 
-      // Tracklet bar
-      g.append('rect')
-        .attr('x', startX)
-        .attr('y', y)
-        .attr('width', barWidth)
-        .attr('height', LANE_HEIGHT)
-        .attr('fill', color)
-        .attr('fill-opacity', opacity)
-        .attr('rx', 3)
-        .attr('cursor', 'pointer')
-        .attr('stroke', isHighlighted ? color : 'none')
-        .attr('stroke-width', isHighlighted ? 2 : 0)
-        .on('click', (event) => {
-          event.stopPropagation();
-          // Click on tracklet: select the node (if no edge is selected for this node)
-          // and seek to that frame
-          const [mouseX] = d3.pointer(event);
-          const frame = Math.round(xScale.invert(mouseX));
-          const clampedFrame = Math.max(range.start, Math.min(range.end, frame));
-          setCurrentFrame(clampedFrame);
+      // Draw each contiguous segment as a separate bar
+      segments.forEach((segment) => {
+        const segStartX = xScale(segment.start);
+        const segEndX = xScale(segment.end);
+        const segWidth = Math.max(segEndX - segStartX, 2);
 
-          // Select this node
-          setSelectedNode(node);
-        })
-        .on('mouseover', function () {
-          d3.select(this).attr('fill-opacity', 1);
-        })
-        .on('mouseout', function () {
-          d3.select(this).attr('fill-opacity', opacity);
-        });
+        g.append('rect')
+          .attr('x', segStartX)
+          .attr('y', y)
+          .attr('width', segWidth)
+          .attr('height', LANE_HEIGHT)
+          .attr('fill', color)
+          .attr('fill-opacity', opacity)
+          .attr('rx', 3)
+          .attr('cursor', 'pointer')
+          .attr('stroke', isHighlighted ? color : 'none')
+          .attr('stroke-width', isHighlighted ? 2 : 0)
+          .on('click', (event) => {
+            event.stopPropagation();
+            // Click on tracklet: select the node and seek to that frame
+            const [mouseX] = d3.pointer(event);
+            const frame = Math.round(xScale.invert(mouseX));
+            const clampedFrame = Math.max(segment.start, Math.min(segment.end, frame));
+            setCurrentFrame(clampedFrame);
 
-      // Frame range indicator on bar
-      if (barWidth > 40) {
-        g.append('text')
-          .attr('x', startX + barWidth / 2)
-          .attr('y', y + LANE_HEIGHT / 2 + 3)
-          .attr('text-anchor', 'middle')
-          .attr('font-size', '9px')
-          .attr('fill', '#fff')
-          .attr('pointer-events', 'none')
-          .text(`${range.start}-${range.end}`);
-      }
+            // Select this node
+            setSelectedNode(node);
+          })
+          .on('mouseover', function () {
+            d3.select(this).attr('fill-opacity', 1);
+          })
+          .on('mouseout', function () {
+            d3.select(this).attr('fill-opacity', opacity);
+          });
+
+        // Frame range indicator on segment (only if wide enough)
+        if (segWidth > 40) {
+          g.append('text')
+            .attr('x', segStartX + segWidth / 2)
+            .attr('y', y + LANE_HEIGHT / 2 + 3)
+            .attr('text-anchor', 'middle')
+            .attr('font-size', '9px')
+            .attr('fill', '#fff')
+            .attr('pointer-events', 'none')
+            .text(`${segment.start}-${segment.end}`);
+        }
+      });
     });
 
     // Current frame indicator (red vertical line)
