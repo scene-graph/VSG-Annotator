@@ -39,6 +39,12 @@ class User(Base):
     revisions: Mapped[list["EdgeRevision"]] = relationship(
         "EdgeRevision", back_populates="user"
     )
+    metadata_revisions: Mapped[list["MetadataRevision"]] = relationship(
+        "MetadataRevision", back_populates="user"
+    )
+    node_revisions: Mapped[list["NodeRevision"]] = relationship(
+        "NodeRevision", back_populates="user"
+    )
 
     def __repr__(self) -> str:
         return f"<User(id={self.id}, username='{self.username}')>"
@@ -72,6 +78,12 @@ class Video(Base):
     # Relationships
     revisions: Mapped[list["EdgeRevision"]] = relationship(
         "EdgeRevision", back_populates="video"
+    )
+    metadata_revisions: Mapped[list["MetadataRevision"]] = relationship(
+        "MetadataRevision", back_populates="video"
+    )
+    node_revisions: Mapped[list["NodeRevision"]] = relationship(
+        "NodeRevision", back_populates="video"
     )
 
     def __repr__(self) -> str:
@@ -116,6 +128,67 @@ class EdgeRevision(Base):
 
     def __repr__(self) -> str:
         return f"<EdgeRevision(id={self.id}, edge_id='{self.edge_id}', action='{self.action}')>"
+
+
+class MetadataRevision(Base):
+    """Metadata revision model for tracking human edits to scene_info and camera_motion."""
+
+    __tablename__ = "metadata_revisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("videos.id"), nullable=False
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False
+    )
+    metadata_type: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # "scene_info" or "camera_motion"
+    original_value: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    new_value: Mapped[dict] = mapped_column(JSON, nullable=False)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    # Relationships
+    video: Mapped["Video"] = relationship("Video", back_populates="metadata_revisions")
+    user: Mapped["User"] = relationship("User", back_populates="metadata_revisions")
+
+    def __repr__(self) -> str:
+        return f"<MetadataRevision(id={self.id}, metadata_type='{self.metadata_type}')>"
+
+
+class NodeRevision(Base):
+    """Node revision model for tracking human edits to node attributes."""
+
+    __tablename__ = "node_revisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("videos.id"), nullable=False
+    )
+    node_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False
+    )
+    action: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # modify
+    original_attributes: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    new_attributes: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    # Relationships
+    video: Mapped["Video"] = relationship("Video", back_populates="node_revisions")
+    user: Mapped["User"] = relationship("User", back_populates="node_revisions")
+
+    def __repr__(self) -> str:
+        return f"<NodeRevision(id={self.id}, node_id='{self.node_id}', action='{self.action}')>"
 
 
 # Async engine and session factory

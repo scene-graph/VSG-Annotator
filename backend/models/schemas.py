@@ -1,7 +1,7 @@
 """Pydantic schemas for API request/response models."""
 
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -329,3 +329,136 @@ class ExportResponse(BaseModel):
     exported_at: datetime
     vsg: dict[str, Any]
     revision_summary: dict[str, int]
+
+
+# ============================================================================
+# Scene Info Schemas
+# ============================================================================
+
+
+class SceneAttributes(BaseModel):
+    """Scene attributes for video-level metadata."""
+
+    environment: Literal["indoor", "outdoor", "vehicle"] = "indoor"
+    lighting_source: Literal["natural", "artificial", "mixed", "unknown"] = "unknown"
+    lighting_level: Literal["bright", "normal", "dim", "dark"] = "normal"
+    spatial_layout: Literal["enclosed", "semi_open", "open", "close_up"] = "enclosed"
+    crowdedness: Literal["empty", "sparse", "moderate", "crowded"] = "moderate"
+    activity_level: Literal["static", "low", "moderate", "high"] = "moderate"
+
+
+class SceneInfo(BaseModel):
+    """Scene info for video-level metadata."""
+
+    category: str = "unknown"
+    confidence: float = 0.5
+    attributes: SceneAttributes = Field(default_factory=SceneAttributes)
+
+
+class SceneInfoModifyRequest(BaseModel):
+    """Request to modify scene info."""
+
+    video_id: str
+    user_id: int
+    scene_info: SceneInfo
+    notes: Optional[str] = None
+
+
+# ============================================================================
+# Camera Motion Schemas
+# ============================================================================
+
+
+class CameraMotionPrimary(BaseModel):
+    """Primary camera motion descriptor."""
+
+    type: Literal[
+        "dolly", "pedestal", "truck", "pan", "tilt", "roll", "zoom", "static"
+    ] = "static"
+    direction: Literal[
+        "in", "out", "up", "down", "left", "right", "cw", "ccw", "none"
+    ] = "none"
+
+
+class CameraMotionAttributes(BaseModel):
+    """Camera motion attributes."""
+
+    style: Literal[
+        "handheld", "stabilized", "tripod", "mounted", "drone"
+    ] = "stabilized"
+    steadiness: Literal[
+        "stable", "slight_shake", "moderate_shake", "shaky", "complex", "minor"
+    ] = "stable"
+    intensity: Literal["minimal", "subtle", "moderate", "dynamic"] = "minimal"
+    dynamism: Literal["static", "low", "moderate", "high"] = "static"
+    follows_action: Literal["tracking", "observational", "independent"] = "observational"
+
+
+class CameraMotion(BaseModel):
+    """Camera motion for video-level metadata."""
+
+    has_motion: bool = False
+    motion_clarity: Literal["simple", "complex", "minor"] = "simple"
+    primary_motion: CameraMotionPrimary = Field(default_factory=CameraMotionPrimary)
+    attributes: Optional[CameraMotionAttributes] = None
+    purpose_of_movement: Optional[str] = None
+    confidence: float = 0.5
+    description: Optional[str] = None
+
+
+class CameraMotionModifyRequest(BaseModel):
+    """Request to modify camera motion."""
+
+    video_id: str
+    user_id: int
+    camera_motion: CameraMotion
+    notes: Optional[str] = None
+
+
+# ============================================================================
+# Metadata Revision Schemas
+# ============================================================================
+
+
+class MetadataRevisionResponse(BaseModel):
+    """Response for metadata revision history."""
+
+    id: int
+    video_id: str
+    metadata_type: str  # "scene_info" or "camera_motion"
+    user_id: int
+    username: str
+    original_value: dict[str, Any]
+    new_value: dict[str, Any]
+    review_notes: Optional[str]
+    created_at: datetime
+
+
+# ============================================================================
+# Node Revision Schemas
+# ============================================================================
+
+
+class NodeModify(BaseModel):
+    """Modify node attributes."""
+
+    video_id: str
+    node_id: str
+    user_id: int
+    new_visual_attributes: Optional[NodeVisualAttributes] = None
+    new_physical_attributes: Optional[NodePhysicalAttributes] = None
+    notes: Optional[str] = None
+
+
+class NodeRevisionResponse(BaseModel):
+    """Response for node revision history."""
+
+    id: int
+    node_id: str
+    action: str
+    user_id: int
+    username: str
+    original_attributes: Optional[dict[str, Any]]
+    new_attributes: Optional[dict[str, Any]]
+    review_notes: Optional[str]
+    created_at: datetime

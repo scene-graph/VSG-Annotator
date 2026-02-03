@@ -6,13 +6,15 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.database import EdgeRevision, User, Video
+from backend.models.database import EdgeRevision, NodeRevision, User, Video
 from backend.models.schemas import (
     AnnotationAccept,
     AnnotationCreate,
     AnnotationModify,
     AnnotationReject,
     EdgeResponse,
+    NodeModify,
+    NodeRevisionResponse,
     RevisionResponse,
 )
 
@@ -306,3 +308,92 @@ class RevisionTracker:
             "created": len([r for r in revisions if r.action == "create"]),
             "total": len(revisions),
         }
+
+    # =========================================================================
+    # Node Revision Methods
+    # =========================================================================
+
+    async def record_node_modify(
+        self, modification: NodeModify, original_attributes: dict
+    ) -> NodeRevision:
+        """Record a node attribute modification."""
+        video = await self.get_video_by_video_id(modification.video_id)
+        if video is None:
+            raise ValueError(f"Video not found: {modification.video_id}")
+
+        # Build new attributes dict
+        new_attributes = {}
+        if modification.new_visual_attributes:
+            new_attributes["visual"] = modification.new_visual_attributes.model_dump()
+        if modification.new_physical_attributes:
+            new_attributes["physical"] = modification.new_physical_attributes.model_dump()
+
+        revision = NodeRevision(
+            video_id=video.id,
+            node_id=modification.node_id,
+            user_id=modification.user_id,
+            action="modify",
+            original_attributes=original_attributes,
+            new_attributes=new_attributes,
+            review_notes=modification.notes,
+        )
+
+        self.session.add(revision)
+        await self.session.flush()
+        return revision
+
+    async def get_node_history(
+        self, video_id: str, node_id: str
+    ) -> list[NodeRevisionResponse]:
+        """Get revision history for a node."""
+        video = await self.get_video_by_video_id(video_id)
+        if video is None:
+            return []
+
+        result = await self.session.execute(
+            select(NodeRevision, User)
+            .join(User, NodeRevision.user_id == User.id)
+            .where(
+                NodeRevision.video_id == video.id,
+                NodeRevision.node_id == node_id,
+            )
+            .order_by(NodeRevision.created_at.desc())
+        )
+
+        revisions = []
+        for revision, user in result.all():
+            revisions.append(
+                NodeRevisionResponse(
+                    id=revision.id,
+                    node_id=revision.node_id,
+                    action=revision.action,
+                    user_id=revision.user_id,
+                    username=user.username,
+                    original_attributes=revision.original_attributes,
+                    new_attributes=revision.new_attributes,
+                    review_notes=revision.review_notes,
+                    created_at=revision.created_at,
+                )
+            )
+
+        return revisions
+
+    async def get_latest_node_revision(
+        self, video_id: str, node_id: str
+    ) -> Optional[NodeRevision]:
+        """Get the latest revision for a node."""
+        video = await self.get_video_by_video_id(video_id)
+        if video is None:
+            return None
+
+        result = await self.session.execute(
+            select(NodeRevision)
+            .where(
+                NodeRevision.video_id == video.id,
+                NodeRevision.node_id == node_id,
+            )
+            .order_by(NodeRevision.created_at.desc())
+            .limit(1)
+        )
+
+        return result.scalar_one_or_none()

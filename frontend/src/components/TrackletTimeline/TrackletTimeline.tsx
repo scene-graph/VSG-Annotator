@@ -1,7 +1,7 @@
 import { useRef, useEffect, useMemo } from 'react';
 import * as d3 from 'd3';
 import type { Node } from '../../types';
-import { useAppStore, useCurrentFrame, useSelectedEdge, useSourceNodes, useTargetNodes, useEdgeDragState } from '../../store';
+import { useAppStore, useCurrentFrame, useSelectedEdge, useSelectedNode, useSourceNodes, useTargetNodes, useEdgeDragState } from '../../store';
 
 interface TrackletTimelineProps {
   nodes: Node[];
@@ -16,6 +16,9 @@ const COLORS = {
   unselected: '#6b7280',  // Gray
   edgePeriod: '#f97316',  // Orange
   currentFrame: '#ef4444', // Red
+  selected: '#22c55e',    // Green for selected node
+  static: '#6b7280',      // Gray for static nodes
+  dynamic: '#f97316',     // Orange for dynamic nodes
 };
 
 const LANE_HEIGHT = 20;
@@ -37,10 +40,13 @@ function getTrackletRange(node: Node): { start: number; end: number } {
 export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletTimelineProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const justSelectedNodeIdRef = useRef<string | null>(null);
 
   const currentFrame = useCurrentFrame();
   const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
   const selectedEdge = useSelectedEdge();
+  const selectedNode = useSelectedNode();
+  const setSelectedNode = useAppStore((state) => state.setSelectedNode);
   const sourceNodes = useSourceNodes();
   const targetNodes = useTargetNodes();
   const edgeDragState = useEdgeDragState();
@@ -53,7 +59,13 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         range: getTrackletRange(node),
       }))
       .sort((a, b) => {
-        // First, sort source nodes to top, then target, then others
+        // First, sort selected node to top
+        const aIsSelected = selectedNode?.node_id === a.node.node_id;
+        const bIsSelected = selectedNode?.node_id === b.node.node_id;
+        if (aIsSelected && !bIsSelected) return -1;
+        if (!aIsSelected && bIsSelected) return 1;
+
+        // Then, sort source nodes to top, then target, then others
         const aIsSource = sourceNodes.includes(a.node.node_id);
         const bIsSource = sourceNodes.includes(b.node.node_id);
         const aIsTarget = targetNodes.includes(a.node.node_id);
@@ -71,7 +83,7 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         // Then by start frame
         return a.range.start - b.range.start;
       });
-  }, [nodes, sourceNodes, targetNodes]);
+  }, [nodes, sourceNodes, targetNodes, selectedNode]);
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current) return;
@@ -223,22 +235,47 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
 
       const isSource = sourceNodes.includes(node.node_id);
       const isTarget = targetNodes.includes(node.node_id);
+      const isSelected = selectedNode?.node_id === node.node_id;
+      const hasEdgeSelection = selectedEdge !== null;
+      const hasNodeSelection = selectedNode !== null;
 
+      // Determine color based on context
       let color = COLORS.unselected;
-      if (isSource) color = COLORS.source;
-      else if (isTarget) color = COLORS.target;
+      if (isSelected) {
+        color = COLORS.selected;
+      } else if (isSource) {
+        color = COLORS.source;
+      } else if (isTarget) {
+        color = COLORS.target;
+      } else if (!hasEdgeSelection && !hasNodeSelection) {
+        // No selection: show static/dynamic colors
+        color = node.is_static ? COLORS.static : COLORS.dynamic;
+      }
 
-      const opacity = selectedEdge && !isSource && !isTarget ? 0.3 : 0.8;
+      // Determine opacity
+      let opacity = 0.8;
+      if (hasEdgeSelection && !isSource && !isTarget) {
+        opacity = 0.3;
+      } else if (hasNodeSelection && !isSelected) {
+        opacity = 0.4;
+      }
+
+      const isHighlighted = isSelected || isSource || isTarget;
 
       // Node label (left side)
       const label = `${node.category}_${node.object_id}`;
+      let labelColor = '#9ca3af';
+      if (isSelected) labelColor = COLORS.selected;
+      else if (isSource) labelColor = COLORS.source;
+      else if (isTarget) labelColor = COLORS.target;
+
       g.append('text')
         .attr('x', MARGIN.left - 8)
         .attr('y', y + LANE_HEIGHT / 2 + 4)
         .attr('text-anchor', 'end')
         .attr('font-size', '11px')
-        .attr('fill', isSource ? COLORS.source : isTarget ? COLORS.target : '#9ca3af')
-        .attr('font-weight', isSource || isTarget ? 'bold' : 'normal')
+        .attr('fill', labelColor)
+        .attr('font-weight', isHighlighted ? 'bold' : 'normal')
         .text(label);
 
       // Tracklet bar
@@ -251,15 +288,19 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         .attr('fill-opacity', opacity)
         .attr('rx', 3)
         .attr('cursor', 'pointer')
-        .attr('stroke', isSource || isTarget ? color : 'none')
-        .attr('stroke-width', isSource || isTarget ? 2 : 0)
+        .attr('stroke', isHighlighted ? color : 'none')
+        .attr('stroke-width', isHighlighted ? 2 : 0)
         .on('click', (event) => {
           event.stopPropagation();
-          // Click on tracklet to seek to that frame
+          // Click on tracklet: select the node (if no edge is selected for this node)
+          // and seek to that frame
           const [mouseX] = d3.pointer(event);
           const frame = Math.round(xScale.invert(mouseX));
           const clampedFrame = Math.max(range.start, Math.min(range.end, frame));
           setCurrentFrame(clampedFrame);
+
+          // Select this node
+          setSelectedNode(node);
         })
         .on('mouseover', function () {
           d3.select(this).attr('fill-opacity', 1);
@@ -311,7 +352,61 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         const frame = Math.round(xScale.invert(mouseX));
         setCurrentFrame(Math.max(0, Math.min(totalFrames - 1, frame)));
       });
-  }, [sortedNodes, totalFrames, currentFrame, selectedEdge, sourceNodes, targetNodes, setCurrentFrame, height, edgeDragState]);
+  }, [sortedNodes, totalFrames, currentFrame, selectedEdge, selectedNode, sourceNodes, targetNodes, setCurrentFrame, setSelectedNode, height, edgeDragState]);
+
+  // Track selection changes - mark the node as just selected
+  useEffect(() => {
+    if (selectedNode) {
+      justSelectedNodeIdRef.current = selectedNode.node_id;
+    }
+  }, [selectedNode?.node_id]);
+
+  // Scroll to selected node after re-render
+  useEffect(() => {
+    const nodeId = justSelectedNodeIdRef.current;
+    if (!nodeId || !containerRef.current) return;
+
+    // Use requestAnimationFrame to ensure scroll happens after paint
+    const rafId = requestAnimationFrame(() => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const nodeIndex = sortedNodes.findIndex(({ node }) => node.node_id === nodeId);
+      if (nodeIndex === -1) {
+        justSelectedNodeIdRef.current = null;
+        return;
+      }
+
+      const nodeY = MARGIN.top + nodeIndex * (LANE_HEIGHT + LANE_PADDING);
+      const nodeBottom = nodeY + LANE_HEIGHT;
+
+      // Check if node is already visible (with padding)
+      const scrollTop = container.scrollTop;
+      const containerHeight = container.clientHeight;
+      const visibleTop = scrollTop + 20;
+      const visibleBottom = scrollTop + containerHeight - 20;
+
+      if (nodeY >= visibleTop && nodeBottom <= visibleBottom) {
+        // Already visible, no need to scroll
+        justSelectedNodeIdRef.current = null;
+        return;
+      }
+
+      // Scroll to position node at 1/3 from top (natural viewing position)
+      const targetScrollTop = nodeY - containerHeight / 3;
+      const maxScroll = container.scrollHeight - containerHeight;
+      const clampedScrollTop = Math.max(0, Math.min(targetScrollTop, maxScroll));
+
+      container.scrollTo({
+        top: clampedScrollTop,
+        behavior: 'smooth'
+      });
+
+      justSelectedNodeIdRef.current = null;
+    });
+
+    return () => cancelAnimationFrame(rafId);
+  }, [sortedNodes]);
 
   const contentHeight = Math.max(
     height,
@@ -327,26 +422,57 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
       {/* Legend */}
       <div className="flex items-center gap-4 px-3 py-2 border-b border-gray-700">
         <span className="text-gray-400 text-sm font-medium">Object Tracklets</span>
-        <div className="flex items-center gap-1">
-          <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.source }} />
-          <span className="text-gray-300 text-xs">Source</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.target }} />
-          <span className="text-gray-300 text-xs">Target</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.unselected }} />
-          <span className="text-gray-300 text-xs">Other</span>
-        </div>
-        {selectedEdge && (
-          <div className="flex items-center gap-1 ml-2 border-l border-gray-600 pl-3">
-            <span
-              className="w-3 h-3 rounded"
-              style={{ backgroundColor: COLORS.edgePeriod, opacity: 0.5 }}
-            />
-            <span className="text-gray-300 text-xs">Edge Period</span>
-          </div>
+        {selectedEdge ? (
+          // Edge selection: show Source/Target/Other
+          <>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.source }} />
+              <span className="text-gray-300 text-xs">Source</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.target }} />
+              <span className="text-gray-300 text-xs">Target</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.unselected }} />
+              <span className="text-gray-300 text-xs">Other</span>
+            </div>
+            <div className="flex items-center gap-1 ml-2 border-l border-gray-600 pl-3">
+              <span
+                className="w-3 h-3 rounded"
+                style={{ backgroundColor: COLORS.edgePeriod, opacity: 0.5 }}
+              />
+              <span className="text-gray-300 text-xs">Edge Period</span>
+            </div>
+          </>
+        ) : selectedNode ? (
+          // Node selection: show Selected/Static/Dynamic
+          <>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.selected }} />
+              <span className="text-gray-300 text-xs">Selected</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.static }} />
+              <span className="text-gray-300 text-xs">Static</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.dynamic }} />
+              <span className="text-gray-300 text-xs">Dynamic</span>
+            </div>
+          </>
+        ) : (
+          // No selection: show Static/Dynamic
+          <>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.static }} />
+              <span className="text-gray-300 text-xs">Static</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.dynamic }} />
+              <span className="text-gray-300 text-xs">Dynamic</span>
+            </div>
+          </>
         )}
         {edgeDragState && (
           <div className="flex items-center gap-1 ml-2 border-l border-gray-600 pl-3 animate-pulse">

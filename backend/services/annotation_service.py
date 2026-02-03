@@ -12,6 +12,8 @@ from backend.models.schemas import (
     AnnotationModify,
     AnnotationReject,
     EdgeResponse,
+    NodeModify,
+    NodeRevisionResponse,
     RevisionResponse,
 )
 
@@ -101,8 +103,49 @@ class AnnotationService:
             "action": "create",
         }
 
+    async def modify_node(self, modification: NodeModify) -> dict:
+        """Modify a node's attributes."""
+        # Get the original node
+        node = self.vsg_loader.get_node_by_id(modification.node_id)
+        if node is None:
+            raise ValueError(f"Node not found: {modification.node_id}")
+
+        # Get original attributes (NodeResponse has attributes as NodeAttributes)
+        original_attributes = {
+            "visual": node.attributes.visual.model_dump(),
+            "physical": node.attributes.physical.model_dump(),
+        }
+
+        # Record the modification
+        revision = await self.tracker.record_node_modify(modification, original_attributes)
+
+        return {
+            "success": True,
+            "revision_id": revision.id,
+            "node_id": modification.node_id,
+            "action": "modify",
+            "changes": {
+                "visual_attributes": (
+                    modification.new_visual_attributes.model_dump()
+                    if modification.new_visual_attributes
+                    else None
+                ),
+                "physical_attributes": (
+                    modification.new_physical_attributes.model_dump()
+                    if modification.new_physical_attributes
+                    else None
+                ),
+            },
+        }
+
+    async def get_node_history(
+        self, video_id: str, node_id: str
+    ) -> list[NodeRevisionResponse]:
+        """Get revision history for a node."""
+        return await self.tracker.get_node_history(video_id, node_id)
+
     async def get_edge_with_revisions(self, edge_id: str) -> Optional[EdgeResponse]:
-        """Get an edge with its revision status."""
+        """Get an edge with its revision status and applied modifications."""
         edge = self.vsg_loader.get_edge_by_id(edge_id)
         if edge is None:
             return None
@@ -116,6 +159,17 @@ class AnnotationService:
             edge.has_revision = True
             edge.revision_action = latest.action
 
+            # Apply modifications if this is a "modify" action
+            if latest.action == "modify":
+                if latest.new_predicate:
+                    edge.predicate = latest.new_predicate
+                if latest.new_time_period:
+                    from backend.models.schemas import TimePeriod
+                    edge.time_period = TimePeriod(**latest.new_time_period)
+                if latest.new_attributes:
+                    from backend.models.schemas import MotionAttributes
+                    edge.attributes = MotionAttributes(**latest.new_attributes)
+
         return edge
 
     async def get_edge_history(
@@ -125,25 +179,38 @@ class AnnotationService:
         return await self.tracker.get_edge_history(video_id, edge_id)
 
     async def get_edges_with_revisions(self) -> list[EdgeResponse]:
-        """Get all edges with their revision statuses."""
+        """Get all edges with their revision statuses and applied modifications."""
         edges = self.vsg_loader.get_all_edges()
         video_id = self.vsg_loader.video_id
 
         # Get all revisions for this video
         revisions = await self.tracker.get_video_revisions(video_id)
 
-        # Build a map of edge_id -> latest revision action
-        revision_map: dict[str, str] = {}
+        # Build a map of edge_id -> latest revision (full object)
+        from backend.models.database import EdgeRevision
+        revision_map: dict[str, EdgeRevision] = {}
         for rev in revisions:
             # Keep only the latest revision per edge
             if rev.edge_id not in revision_map:
-                revision_map[rev.edge_id] = rev.action
+                revision_map[rev.edge_id] = rev
 
-        # Update edges with revision info
+        from backend.models.schemas import TimePeriod, MotionAttributes
+
+        # Update edges with revision info and apply modifications
         for edge in edges:
             if edge.edge_id in revision_map:
+                rev = revision_map[edge.edge_id]
                 edge.has_revision = True
-                edge.revision_action = revision_map[edge.edge_id]
+                edge.revision_action = rev.action
+
+                # Apply modifications if this is a "modify" action
+                if rev.action == "modify":
+                    if rev.new_predicate:
+                        edge.predicate = rev.new_predicate
+                    if rev.new_time_period:
+                        edge.time_period = TimePeriod(**rev.new_time_period)
+                    if rev.new_attributes:
+                        edge.attributes = MotionAttributes(**rev.new_attributes)
 
         return edges
 

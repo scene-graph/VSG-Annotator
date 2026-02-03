@@ -1,7 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { videosApi, edgesApi, annotationsApi } from '../services/api';
-import { useAppStore } from '../store';
-import type { AnnotationAccept, AnnotationReject, AnnotationModify, AnnotationCreate, EdgeFilters } from '../types';
+import type {
+  AnnotationAccept,
+  AnnotationReject,
+  AnnotationModify,
+  AnnotationCreate,
+  CameraMotionModifyRequest,
+  EdgeFilters,
+  NodeModify,
+  SceneInfoModifyRequest,
+} from '../types';
 
 export function useVideos(status?: string, dataset?: string) {
   return useQuery({
@@ -64,8 +72,13 @@ export function useAcceptEdge() {
   return useMutation({
     mutationFn: (annotation: AnnotationAccept) => annotationsApi.accept(annotation),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['edges', variables.video_id] });
+      // Use predicate to match all edge queries for this video (handles different filter combinations)
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'edges' && query.queryKey[1] === variables.video_id
+      });
       queryClient.invalidateQueries({ queryKey: ['edgeHistory', variables.video_id, variables.edge_id] });
+      queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
     },
   });
 }
@@ -76,8 +89,13 @@ export function useRejectEdge() {
   return useMutation({
     mutationFn: (annotation: AnnotationReject) => annotationsApi.reject(annotation),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['edges', variables.video_id] });
+      // Use predicate to match all edge queries for this video (handles different filter combinations)
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'edges' && query.queryKey[1] === variables.video_id
+      });
       queryClient.invalidateQueries({ queryKey: ['edgeHistory', variables.video_id, variables.edge_id] });
+      queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
     },
   });
 }
@@ -88,8 +106,13 @@ export function useModifyEdge() {
   return useMutation({
     mutationFn: (annotation: AnnotationModify) => annotationsApi.modify(annotation),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['edges', variables.video_id] });
+      // Use predicate to match all edge queries for this video (handles different filter combinations)
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'edges' && query.queryKey[1] === variables.video_id
+      });
       queryClient.invalidateQueries({ queryKey: ['edgeHistory', variables.video_id, variables.edge_id] });
+      queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
     },
   });
 }
@@ -100,7 +123,94 @@ export function useCreateEdge() {
   return useMutation({
     mutationFn: (annotation: AnnotationCreate) => annotationsApi.create(annotation),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['edges', variables.video_id] });
+      // Use predicate to match all edge queries for this video (handles different filter combinations)
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'edges' && query.queryKey[1] === variables.video_id
+      });
+      queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
     },
+  });
+}
+
+// Scene Info and Camera Motion hooks
+export function useSceneInfo(videoId: string | undefined) {
+  return useQuery({
+    queryKey: ['sceneInfo', videoId],
+    queryFn: () => videosApi.getSceneInfo(videoId!),
+    enabled: !!videoId,
+  });
+}
+
+export function useCameraMotion(videoId: string | undefined) {
+  return useQuery({
+    queryKey: ['cameraMotion', videoId],
+    queryFn: () => videosApi.getCameraMotion(videoId!),
+    enabled: !!videoId,
+  });
+}
+
+export function useModifySceneInfo() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (request: SceneInfoModifyRequest) => annotationsApi.modifySceneInfo(request),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['sceneInfo', variables.video_id] });
+      queryClient.invalidateQueries({ queryKey: ['metadataHistory', variables.video_id] });
+    },
+  });
+}
+
+export function useModifyCameraMotion() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (request: CameraMotionModifyRequest) => annotationsApi.modifyCameraMotion(request),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['cameraMotion', variables.video_id] });
+      queryClient.invalidateQueries({ queryKey: ['metadataHistory', variables.video_id] });
+    },
+  });
+}
+
+export function useMetadataHistory(videoId: string | undefined) {
+  return useQuery({
+    queryKey: ['metadataHistory', videoId],
+    queryFn: () => annotationsApi.getMetadataHistory(videoId!),
+    enabled: !!videoId,
+  });
+}
+
+// Node modification hooks
+export function useModifyNode() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (modification: NodeModify) => annotationsApi.modifyNode(modification),
+    onSuccess: (_, variables) => {
+      // Invalidate node queries for this video
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'nodes' && query.queryKey[1] === variables.video_id
+      });
+      queryClient.invalidateQueries({ queryKey: ['nodeHistory', variables.video_id, variables.node_id] });
+    },
+  });
+}
+
+export function useNodeHistory(videoId: string | undefined, nodeId: string | undefined) {
+  return useQuery({
+    queryKey: ['nodeHistory', videoId, nodeId],
+    queryFn: () => annotationsApi.getNodeHistory(videoId!, nodeId!),
+    enabled: !!videoId && !!nodeId,
+  });
+}
+
+export function useExportSummary(videoId: string | undefined) {
+  return useQuery({
+    queryKey: ['exportSummary', videoId],
+    queryFn: () => import('../services/api').then(api => api.exportApi.getSummary(videoId!)),
+    enabled: !!videoId,
   });
 }

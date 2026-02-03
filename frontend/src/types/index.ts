@@ -182,3 +182,106 @@ export interface EdgeStats {
   gpt_extracted: number;
   unique_predicates: string[];
 }
+
+// Scene Info types
+export interface SceneAttributes {
+  environment: 'indoor' | 'outdoor' | 'vehicle';
+  lighting_source: 'natural' | 'artificial' | 'mixed' | 'unknown';
+  lighting_level: 'bright' | 'normal' | 'dim' | 'dark';
+  spatial_layout: 'enclosed' | 'semi_open' | 'open' | 'close_up';
+  crowdedness: 'empty' | 'sparse' | 'moderate' | 'crowded';
+  activity_level: 'static' | 'low' | 'moderate' | 'high';
+}
+
+export interface SceneInfo {
+  category: string;
+  confidence: number;
+  attributes: SceneAttributes;
+}
+
+// Camera Motion types
+export interface CameraMotionPrimary {
+  type: 'dolly' | 'pedestal' | 'truck' | 'pan' | 'tilt' | 'roll' | 'zoom' | 'static';
+  direction: 'in' | 'out' | 'up' | 'down' | 'left' | 'right' | 'cw' | 'ccw' | 'none';
+}
+
+export interface CameraMotionAttributes {
+  style: 'handheld' | 'stabilized' | 'tripod' | 'mounted' | 'drone';
+  steadiness: 'stable' | 'slight_shake' | 'moderate_shake' | 'shaky' | 'complex' | 'minor';
+  intensity: 'minimal' | 'subtle' | 'moderate' | 'dynamic';
+  dynamism: 'static' | 'low' | 'moderate' | 'high';
+  follows_action: 'tracking' | 'observational' | 'independent';
+}
+
+export interface CameraMotion {
+  has_motion: boolean;
+  motion_clarity: 'simple' | 'complex' | 'minor';
+  primary_motion: CameraMotionPrimary;
+  attributes?: CameraMotionAttributes;
+  purpose_of_movement?: string;
+  confidence: number;
+  description?: string;
+}
+
+// Video metadata response
+export interface VideoMetadata {
+  scene_info?: SceneInfo;
+  camera_motion?: CameraMotion;
+}
+
+// Metadata modification requests
+export interface SceneInfoModifyRequest {
+  video_id: string;
+  user_id: number;
+  scene_info: SceneInfo;
+  notes?: string;
+}
+
+export interface CameraMotionModifyRequest {
+  video_id: string;
+  user_id: number;
+  camera_motion: CameraMotion;
+  notes?: string;
+}
+
+// Metadata revision
+export interface MetadataRevision {
+  id: number;
+  video_id: string;
+  metadata_type: 'scene_info' | 'camera_motion';
+  user_id: number;
+  username: string;
+  original_value: Record<string, unknown>;
+  new_value: Record<string, unknown>;
+  review_notes?: string;
+  created_at: string;
+}
+
+// Node modification types
+export interface NodeModify {
+  video_id: string;
+  node_id: string;
+  user_id: number;
+  new_visual_attributes?: NodeVisualAttributes;
+  new_physical_attributes?: NodePhysicalAttributes;
+  notes?: string;
+}
+
+// Node revision
+export interface NodeRevision {
+  id: number;
+  node_id: string;
+  action: string;
+  user_id: number;
+  username: string;
+  original_attributes?: {
+    visual?: NodeVisualAttributes;
+    physical?: NodePhysicalAttributes;
+  };
+  new_attributes?: {
+    visual?: NodeVisualAttributes;
+    physical?: NodePhysicalAttributes;
+  };
+  review_notes?: string;
+  created_at: string;
+}

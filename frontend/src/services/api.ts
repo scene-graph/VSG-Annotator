@@ -3,11 +3,18 @@ import type {
   AnnotationCreate,
   AnnotationModify,
   AnnotationReject,
+  CameraMotion,
+  CameraMotionModifyRequest,
   Edge,
   EdgeFilters,
   EdgeStats,
+  MetadataRevision,
   Node,
+  NodeModify,
+  NodeRevision,
   Revision,
+  SceneInfo,
+  SceneInfoModifyRequest,
   User,
   VideoDetail,
   VideoSummary,
@@ -68,6 +75,14 @@ export const videosApi = {
 
   getMetadata: (videoId: string): Promise<Record<string, unknown>> => {
     return fetchJson(`${API_BASE}/videos/${videoId}/metadata`);
+  },
+
+  getSceneInfo: (videoId: string): Promise<SceneInfo | null> => {
+    return fetchJson(`${API_BASE}/videos/${videoId}/scene-info`);
+  },
+
+  getCameraMotion: (videoId: string): Promise<CameraMotion | null> => {
+    return fetchJson(`${API_BASE}/videos/${videoId}/camera-motion`);
   },
 };
 
@@ -142,6 +157,35 @@ export const annotationsApi = {
 
   getHistory: (videoId: string, edgeId: string): Promise<Revision[]> => {
     return fetchJson(`${API_BASE}/annotations/history/${videoId}/${edgeId}`);
+  },
+
+  modifyNode: (modification: NodeModify): Promise<{ success: boolean; revision_id: number }> => {
+    return fetchJson(`${API_BASE}/annotations/modify-node`, {
+      method: 'POST',
+      body: JSON.stringify(modification),
+    });
+  },
+
+  getNodeHistory: (videoId: string, nodeId: string): Promise<NodeRevision[]> => {
+    return fetchJson(`${API_BASE}/annotations/node-history/${videoId}/${nodeId}`);
+  },
+
+  modifySceneInfo: (request: SceneInfoModifyRequest): Promise<{ success: boolean; revision_id: number }> => {
+    return fetchJson(`${API_BASE}/annotations/modify-scene-info`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  },
+
+  modifyCameraMotion: (request: CameraMotionModifyRequest): Promise<{ success: boolean; revision_id: number }> => {
+    return fetchJson(`${API_BASE}/annotations/modify-camera-motion`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  },
+
+  getMetadataHistory: (videoId: string): Promise<MetadataRevision[]> => {
+    return fetchJson(`${API_BASE}/annotations/metadata-history/${videoId}`);
   },
 };
 
