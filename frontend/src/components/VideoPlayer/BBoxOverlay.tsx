@@ -23,9 +23,13 @@ const COLORS = {
   target: '#ff00d4',  // Magenta - warm color for target
   static: '#6b7280',  // Gray for static objects
   dynamic: '#f97316', // Orange for dynamic objects (default)
+  dimmed: '#374151',  // Dark gray for dimmed objects when selection exists
 };
 
 export function BBoxOverlay({ bboxes, scale, width, height }: BBoxOverlayProps) {
+  // Detect if there's an active selection (any bbox is source/target)
+  const hasSelection = bboxes.some(b => b.role !== null);
+
   return (
     <svg
       className="absolute top-0 left-0 pointer-events-none"
@@ -41,6 +45,7 @@ export function BBoxOverlay({ bboxes, scale, width, height }: BBoxOverlayProps) 
 
         const isStatic = nodeId.startsWith('static');
         const isHighlighted = role !== null;
+        const isDimmed = hasSelection && !isHighlighted;
 
         // Determine stroke color based on role
         let strokeColor: string;
@@ -48,9 +53,15 @@ export function BBoxOverlay({ bboxes, scale, width, height }: BBoxOverlayProps) 
           strokeColor = COLORS.source;
         } else if (role === 'target') {
           strokeColor = COLORS.target;
+        } else if (isDimmed) {
+          strokeColor = COLORS.dimmed;
         } else {
           strokeColor = isStatic ? COLORS.static : COLORS.dynamic;
         }
+
+        // Opacity for dimmed elements
+        const strokeOpacity = isDimmed ? 0.3 : 1;
+        const labelOpacity = isDimmed ? 0.4 : 1;
 
         const strokeWidth = isHighlighted ? 4 : 2;
         const cornerSize = isHighlighted ? 20 : 15;
@@ -84,6 +95,7 @@ export function BBoxOverlay({ bboxes, scale, width, height }: BBoxOverlayProps) 
               fill="none"
               stroke={strokeColor}
               strokeWidth={strokeWidth}
+              strokeOpacity={strokeOpacity}
               strokeDasharray={isStatic && !isHighlighted ? '4 2' : undefined}
             />
 
@@ -118,6 +130,7 @@ export function BBoxOverlay({ bboxes, scale, width, height }: BBoxOverlayProps) 
               width={labelWidth}
               height={18}
               fill={strokeColor}
+              fillOpacity={labelOpacity}
               rx={2}
             />
 
@@ -126,6 +139,7 @@ export function BBoxOverlay({ bboxes, scale, width, height }: BBoxOverlayProps) 
               x={x + 5}
               y={y - 6}
               fill="white"
+              fillOpacity={labelOpacity}
               fontSize={12}
               fontFamily="monospace"
               fontWeight={isHighlighted ? 'bold' : 'normal'}
