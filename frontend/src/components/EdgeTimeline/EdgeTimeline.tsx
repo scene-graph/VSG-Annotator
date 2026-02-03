@@ -40,6 +40,7 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
   const handleDragEndRef = useRef<(edge: Edge, newTimePeriod: TimePeriod) => Promise<void>>();
   const edgesRef = useRef<Edge[]>([]);
   const justModifiedEdgeIdRef = useRef<string | null>(null);
+  const currentUserRef = useRef<typeof currentUser>(null);
 
   const currentFrame = useCurrentFrame();
   const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
@@ -50,7 +51,9 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
   const setEdges = useAppStore((state) => state.setEdges);
 
   const [dragState, setDragState] = useState<DragState | null>(null);
+  const [showUserWarning, setShowUserWarning] = useState(false);
   const modifyMutation = useModifyEdge();
+  const setEdgeDragState = useAppStore((state) => state.setEdgeDragState);
 
   // Sort edges by type, then by start frame
   const sortedEdges = useMemo(() => {
@@ -102,6 +105,24 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
     edgesRef.current = edges;
   }, [edges]);
 
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  // Sync drag state to global store for TrackletTimeline to display
+  useEffect(() => {
+    if (dragState) {
+      setEdgeDragState({
+        edgeId: dragState.edgeId,
+        handle: dragState.handle,
+        currentStartFrame: dragState.currentStartFrame,
+        currentEndFrame: dragState.currentEndFrame,
+      });
+    } else {
+      setEdgeDragState(null);
+    }
+  }, [dragState, setEdgeDragState]);
+
   // Create drag behavior for resize handles
   const createDragBehavior = useCallback((
     edge: Edge,
@@ -111,6 +132,15 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
     return d3.drag<SVGRectElement, unknown>()
       .on('start', (event) => {
         event.sourceEvent.stopPropagation();
+
+        // Check if user is selected - show warning if not
+        if (!currentUserRef.current) {
+          setShowUserWarning(true);
+          // Auto-hide warning after 3 seconds
+          setTimeout(() => setShowUserWarning(false), 3000);
+          return;
+        }
+
         setDragState({
           edgeId: edge.edge_id,
           handle,
@@ -456,7 +486,20 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
   );
 
   return (
-    <div className="bg-gray-800 rounded-lg overflow-hidden">
+    <div className="bg-gray-800 rounded-lg overflow-hidden relative">
+      {/* User selection warning */}
+      {showUserWarning && (
+        <div className="absolute top-0 left-0 right-0 z-10 bg-yellow-600 text-white px-4 py-2 text-sm flex items-center justify-between">
+          <span>Please select a user (e.g., annotator1) before modifying edges</span>
+          <button
+            onClick={() => setShowUserWarning(false)}
+            className="ml-4 text-white hover:text-yellow-200"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Legend */}
       <div className="flex items-center gap-4 p-2 border-b border-gray-700">
         <span className="text-gray-400 text-sm">Edge Types:</span>

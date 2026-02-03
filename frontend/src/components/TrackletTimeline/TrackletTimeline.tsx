@@ -1,7 +1,7 @@
 import { useRef, useEffect, useMemo } from 'react';
 import * as d3 from 'd3';
 import type { Node } from '../../types';
-import { useAppStore, useCurrentFrame, useSelectedEdge, useSourceNodes, useTargetNodes } from '../../store';
+import { useAppStore, useCurrentFrame, useSelectedEdge, useSourceNodes, useTargetNodes, useEdgeDragState } from '../../store';
 
 interface TrackletTimelineProps {
   nodes: Node[];
@@ -43,6 +43,7 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
   const selectedEdge = useSelectedEdge();
   const sourceNodes = useSourceNodes();
   const targetNodes = useTargetNodes();
+  const edgeDragState = useEdgeDragState();
 
   // Sort nodes by category, then by start frame
   const sortedNodes = useMemo(() => {
@@ -151,6 +152,68 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         .attr('pointer-events', 'none');
     }
 
+    // Draw drag preview overlay when edge is being dragged in EdgeTimeline
+    if (edgeDragState) {
+      const dragStartX = xScale(edgeDragState.currentStartFrame);
+      const dragEndX = xScale(edgeDragState.currentEndFrame);
+      const dragWidth = Math.max(dragEndX - dragStartX, 2);
+
+      // Drag range overlay (yellow/gold tint)
+      g.append('rect')
+        .attr('x', dragStartX)
+        .attr('y', MARGIN.top)
+        .attr('width', dragWidth)
+        .attr('height', contentHeight)
+        .attr('fill', '#fbbf24')
+        .attr('fill-opacity', 0.2)
+        .attr('pointer-events', 'none');
+
+      // Start boundary line
+      g.append('line')
+        .attr('x1', dragStartX)
+        .attr('y1', MARGIN.top)
+        .attr('x2', dragStartX)
+        .attr('y2', MARGIN.top + contentHeight)
+        .attr('stroke', '#fbbf24')
+        .attr('stroke-width', edgeDragState.handle === 'left' ? 3 : 1)
+        .attr('pointer-events', 'none');
+
+      // End boundary line
+      g.append('line')
+        .attr('x1', dragEndX)
+        .attr('y1', MARGIN.top)
+        .attr('x2', dragEndX)
+        .attr('y2', MARGIN.top + contentHeight)
+        .attr('stroke', '#fbbf24')
+        .attr('stroke-width', edgeDragState.handle === 'right' ? 3 : 1)
+        .attr('pointer-events', 'none');
+
+      // Tooltip showing current drag frame
+      const tooltipFrame = edgeDragState.handle === 'left'
+        ? edgeDragState.currentStartFrame
+        : edgeDragState.currentEndFrame;
+      const tooltipX = xScale(tooltipFrame);
+
+      g.append('rect')
+        .attr('x', tooltipX - 35)
+        .attr('y', MARGIN.top - 22)
+        .attr('width', 70)
+        .attr('height', 18)
+        .attr('fill', '#1f2937')
+        .attr('stroke', '#fbbf24')
+        .attr('rx', 3)
+        .attr('pointer-events', 'none');
+
+      g.append('text')
+        .attr('x', tooltipX)
+        .attr('y', MARGIN.top - 9)
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#fbbf24')
+        .attr('font-size', '10px')
+        .attr('pointer-events', 'none')
+        .text(`Frame ${tooltipFrame}`);
+    }
+
     // Draw tracklet bars
     sortedNodes.forEach(({ node, range }, i) => {
       const y = MARGIN.top + i * (LANE_HEIGHT + LANE_PADDING);
@@ -248,7 +311,7 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         const frame = Math.round(xScale.invert(mouseX));
         setCurrentFrame(Math.max(0, Math.min(totalFrames - 1, frame)));
       });
-  }, [sortedNodes, totalFrames, currentFrame, selectedEdge, sourceNodes, targetNodes, setCurrentFrame, height]);
+  }, [sortedNodes, totalFrames, currentFrame, selectedEdge, sourceNodes, targetNodes, setCurrentFrame, height, edgeDragState]);
 
   const contentHeight = Math.max(
     height,
@@ -283,6 +346,15 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
               style={{ backgroundColor: COLORS.edgePeriod, opacity: 0.5 }}
             />
             <span className="text-gray-300 text-xs">Edge Period</span>
+          </div>
+        )}
+        {edgeDragState && (
+          <div className="flex items-center gap-1 ml-2 border-l border-gray-600 pl-3 animate-pulse">
+            <span
+              className="w-3 h-3 rounded"
+              style={{ backgroundColor: '#fbbf24', opacity: 0.7 }}
+            />
+            <span className="text-yellow-400 text-xs font-medium">Dragging...</span>
           </div>
         )}
       </div>

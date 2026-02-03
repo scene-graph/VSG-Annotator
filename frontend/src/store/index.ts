@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 import type { Edge, EdgeFilters, EdgeType, Node, User, VideoDetail } from '../types';
 
+// Edge drag state for sharing between EdgeTimeline and TrackletTimeline
+export interface EdgeDragState {
+  edgeId: string;
+  handle: 'left' | 'right';
+  currentStartFrame: number;
+  currentEndFrame: number;
+}
+
 interface AppState {
   // Current video
   currentVideo: VideoDetail | null;
@@ -44,6 +52,10 @@ interface AppState {
   targetNodes: string[];
   setSourceNodes: (nodeIds: string[]) => void;
   setTargetNodes: (nodeIds: string[]) => void;
+
+  // Edge drag state (for syncing EdgeTimeline drag with TrackletTimeline)
+  edgeDragState: EdgeDragState | null;
+  setEdgeDragState: (state: EdgeDragState | null) => void;
 }
 
 const initialFilters: EdgeFilters = {};
@@ -103,6 +115,10 @@ export const useAppStore = create<AppState>((set) => ({
   targetNodes: [],
   setSourceNodes: (nodeIds) => set({ sourceNodes: nodeIds }),
   setTargetNodes: (nodeIds) => set({ targetNodes: nodeIds }),
+
+  // Edge drag state
+  edgeDragState: null,
+  setEdgeDragState: (state) => set({ edgeDragState: state }),
 }));
 
 // Selectors
@@ -115,3 +131,4 @@ export const useFilters = () => useAppStore((state) => state.filters);
 export const useCurrentUser = () => useAppStore((state) => state.currentUser);
 export const useSourceNodes = () => useAppStore((state) => state.sourceNodes);
 export const useTargetNodes = () => useAppStore((state) => state.targetNodes);
+export const useEdgeDragState = () => useAppStore((state) => state.edgeDragState);
