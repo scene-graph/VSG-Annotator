@@ -1,7 +1,7 @@
 import type { BBox } from '../../types';
 
-// Role indicates whether bbox is source, target, or neither
-type BBoxRole = 'source' | 'target' | null;
+// Role indicates whether bbox is source, target, selected, or neither
+type BBoxRole = 'source' | 'target' | 'selected' | null;
 
 interface BBoxItem {
   nodeId: string;
@@ -17,10 +17,11 @@ interface BBoxOverlayProps {
   height: number;
 }
 
-// Color scheme for source/target differentiation
+// Color scheme for source/target/selected differentiation
 const COLORS = {
   source: '#00d4ff',  // Cyan - cool color for source
   target: '#ff00d4',  // Magenta - warm color for target
+  selected: '#22c55e', // Green for selected node
   static: '#6b7280',  // Gray for static objects
   dynamic: '#f97316', // Orange for dynamic objects (default)
   dimmed: '#374151',  // Dark gray for dimmed objects when selection exists
@@ -49,7 +50,9 @@ export function BBoxOverlay({ bboxes, scale, width, height }: BBoxOverlayProps) 
 
         // Determine stroke color based on role
         let strokeColor: string;
-        if (role === 'source') {
+        if (role === 'selected') {
+          strokeColor = COLORS.selected;
+        } else if (role === 'source') {
           strokeColor = COLORS.source;
         } else if (role === 'target') {
           strokeColor = COLORS.target;
@@ -68,7 +71,7 @@ export function BBoxOverlay({ bboxes, scale, width, height }: BBoxOverlayProps) 
         const cornerStroke = isHighlighted ? 5 : 4;
 
         // Role label text
-        const roleLabel = role === 'source' ? 'SOURCE' : role === 'target' ? 'TARGET' : null;
+        const roleLabel = role === 'source' ? 'SOURCE' : role === 'target' ? 'TARGET' : role === 'selected' ? 'SELECTED' : null;
         const labelWidth = Math.max(category.length * 8 + 10, 60);
         const roleLabelWidth = roleLabel ? roleLabel.length * 7 + 10 : 0;
 

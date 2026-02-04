@@ -1,15 +1,18 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Routes, Route, Link, useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { useAppStore, useFilters, useCurrentUser } from './store';
-import { videosApi, edgesApi, usersApi } from './services/api';
+import { useAppStore, useFilters, useCurrentUser, useSelectedNode, useSelectedEdge, useAnnotationMode } from './store';
+import { usersApi } from './services/api';
 import { useVideos, useVideo, useNodes, useEdges } from './hooks';
 import { VideoPlayer } from './components/VideoPlayer';
 import { TrackletTimeline } from './components/TrackletTimeline';
 import { EdgeTimeline } from './components/EdgeTimeline';
 import { EdgeReview } from './components/EdgeReview';
+import { NodeReview } from './components/NodeReview';
 import { Filters } from './components/Filters';
-import { GraphVisualization } from './components/GraphVisualization';
+import { VideoMetadataPanel } from './components/VideoMetadata';
+import { ExportButton } from './components/Export';
+import clsx from 'clsx';
 
 function VideoList() {
   const { data: videos, isLoading, error } = useVideos();
@@ -87,6 +90,56 @@ function VideoList() {
   );
 }
 
+// Annotation mode toggle component
+function AnnotationModeToggle() {
+  const annotationMode = useAnnotationMode();
+  const setAnnotationMode = useAppStore((state) => state.setAnnotationMode);
+  const selectedNode = useSelectedNode();
+  const selectedEdge = useSelectedEdge();
+  const setSelectedNode = useAppStore((state) => state.setSelectedNode);
+  const setSelectedEdge = useAppStore((state) => state.setSelectedEdge);
+
+  const handleModeChange = (mode: 'nodes' | 'edges') => {
+    setAnnotationMode(mode);
+    // Clear the other selection when switching modes explicitly
+    if (mode === 'nodes' && selectedEdge) {
+      setSelectedEdge(null);
+    } else if (mode === 'edges' && selectedNode) {
+      setSelectedNode(null);
+    }
+  };
+
+  return (
+    <div className="bg-gray-800 rounded-lg p-3">
+      <div className="text-gray-400 text-xs uppercase mb-2">View Mode</div>
+      <div className="flex gap-2">
+        <button
+          onClick={() => handleModeChange('nodes')}
+          className={clsx(
+            'flex-1 py-2 px-3 rounded text-sm font-medium transition-colors',
+            annotationMode === 'nodes'
+              ? 'bg-green-600 text-white'
+              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          )}
+        >
+          Nodes
+        </button>
+        <button
+          onClick={() => handleModeChange('edges')}
+          className={clsx(
+            'flex-1 py-2 px-3 rounded text-sm font-medium transition-colors',
+            annotationMode === 'edges'
+              ? 'bg-orange-600 text-white'
+              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          )}
+        >
+          Edges
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function VideoAnnotation() {
   const { videoId } = useParams<{ videoId: string }>();
   const navigate = useNavigate();
@@ -96,6 +149,11 @@ function VideoAnnotation() {
   const setEdges = useAppStore((state) => state.setEdges);
   const nodes = useAppStore((state) => state.nodes);
   const edges = useAppStore((state) => state.edges);
+  const selectedNode = useSelectedNode();
+  const selectedEdge = useSelectedEdge();
+  const annotationMode = useAnnotationMode();
+
+  const [showMetadata, setShowMetadata] = useState(true);
 
   const { data: video, isLoading: videoLoading, error: videoError } = useVideo(videoId);
   const { data: nodesData } = useNodes(videoId);
@@ -151,8 +209,18 @@ function VideoAnnotation() {
             <span className="text-gray-400 text-sm">({video.dataset})</span>
           )}
         </div>
-        <UserSelector />
+        <div className="flex items-center gap-4">
+          <ExportButton videoId={video.video_id} />
+          <UserSelector />
+        </div>
       </header>
+
+      {/* Video Metadata Panel */}
+      <VideoMetadataPanel
+        videoId={video.video_id}
+        isOpen={showMetadata}
+        onToggle={() => setShowMetadata(!showMetadata)}
+      />
 
       {/* Main content */}
       <div className="flex-1 flex min-h-0 p-4 gap-4">
@@ -188,14 +256,25 @@ function VideoAnnotation() {
           </div>
         </div>
 
-        {/* Right column: Filters + Review */}
+        {/* Right column: Mode Toggle + Filters + Review */}
         <div className="w-96 flex flex-col gap-4">
+          {/* Annotation Mode Toggle */}
+          <AnnotationModeToggle />
+
           {/* Filters */}
           <Filters videoId={video.video_id} />
 
-          {/* Edge Review */}
+          {/* Node/Edge Review - conditional based on selection or mode */}
           <div className="flex-1 min-h-0">
-            <EdgeReview videoId={video.video_id} />
+            {selectedNode ? (
+              <NodeReview videoId={video.video_id} />
+            ) : selectedEdge ? (
+              <EdgeReview videoId={video.video_id} />
+            ) : annotationMode === 'nodes' ? (
+              <NodeReview videoId={video.video_id} />
+            ) : (
+              <EdgeReview videoId={video.video_id} />
+            )}
           </div>
         </div>
       </div>

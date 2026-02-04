@@ -2,7 +2,7 @@
 
 import io
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
@@ -12,9 +12,87 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
 from backend.core.vsg_loader import VSGLoader
-from backend.models.database import Video, get_db
+from backend.models.database import MetadataRevision, Video, get_db
 from backend.models.schemas import NodeResponse, VideoDetail, VideoSummary
 from backend.services.video_service import VideoService, get_frame_for_video, get_disk_frame_cache
+
+
+def normalize_scene_info(raw_data: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Normalize scene_info to the new schema format.
+
+    Handles backward compatibility:
+    - Converts single string 'category' to array
+    - Adds default values for new fields
+    - Removes deprecated fields
+    """
+    if raw_data is None:
+        return None
+
+    normalized = {}
+
+    # Handle category: convert string to array if needed
+    category = raw_data.get("category")
+    if category is None:
+        normalized["category"] = ["unknown"]
+    elif isinstance(category, str):
+        normalized["category"] = [category]
+    elif isinstance(category, list):
+        normalized["category"] = category
+    else:
+        normalized["category"] = ["unknown"]
+
+    # Handle transition_types (new field)
+    normalized["transition_types"] = raw_data.get("transition_types", ["unknown"])
+    if not isinstance(normalized["transition_types"], list):
+        normalized["transition_types"] = ["unknown"]
+
+    # Handle scene_change_relations (new field)
+    normalized["scene_change_relations"] = raw_data.get("scene_change_relations", ["unknown"])
+    if not isinstance(normalized["scene_change_relations"], list):
+        normalized["scene_change_relations"] = ["unknown"]
+
+    # Keep confidence
+    normalized["confidence"] = raw_data.get("confidence", 0.5)
+
+    return normalized
+
+
+def normalize_camera_motion(raw_data: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Normalize camera_motion to the new schema format.
+
+    Handles backward compatibility:
+    - Moves steadiness/intensity from attributes to primary_motion
+    - Removes deprecated fields (has_motion, motion_clarity, purpose_of_movement)
+    """
+    if raw_data is None:
+        return None
+
+    normalized = {}
+
+    # Build primary_motion
+    primary_motion_raw = raw_data.get("primary_motion", {})
+    attributes_raw = raw_data.get("attributes", {})
+
+    primary_motion = {
+        "type": primary_motion_raw.get("type", "static"),
+        "direction": primary_motion_raw.get("direction", "none"),
+        # First check primary_motion for steadiness/intensity (new schema)
+        # Then fall back to attributes (old schema)
+        "steadiness": primary_motion_raw.get(
+            "steadiness",
+            attributes_raw.get("steadiness", "stable")
+        ),
+        "intensity": primary_motion_raw.get(
+            "intensity",
+            attributes_raw.get("intensity", "minimal")
+        ),
+    }
+
+    normalized["primary_motion"] = primary_motion
+    normalized["confidence"] = raw_data.get("confidence", 0.5)
+    normalized["description"] = raw_data.get("description")
+
+    return normalized
 
 router = APIRouter(prefix="/videos", tags=["videos"])
 
@@ -250,6 +328,66 @@ async def get_metadata(
 
     loader = VSGLoader(video.vsg_path)
     return loader.metadata
+
+
+@router.get("/{video_id}/scene-info")
+async def get_scene_info(
+    video_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get scene info for a video (with any human revisions applied)."""
+    result = await db.execute(select(Video).where(Video.video_id == video_id))
+    video = result.scalar_one_or_none()
+
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+
+    # Check for latest revision first
+    revision_result = await db.execute(
+        select(MetadataRevision)
+        .where(MetadataRevision.video_id == video.id)
+        .where(MetadataRevision.metadata_type == "scene_info")
+        .order_by(MetadataRevision.created_at.desc())
+        .limit(1)
+    )
+    revision = revision_result.scalar_one_or_none()
+
+    if revision:
+        return revision.new_value  # Return human-revised data (already normalized)
+
+    # Fall back to original VSG data with normalization
+    loader = VSGLoader(video.vsg_path)
+    return normalize_scene_info(loader.scene_info)
+
+
+@router.get("/{video_id}/camera-motion")
+async def get_camera_motion(
+    video_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get camera motion for a video (with any human revisions applied)."""
+    result = await db.execute(select(Video).where(Video.video_id == video_id))
+    video = result.scalar_one_or_none()
+
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+
+    # Check for latest revision first
+    revision_result = await db.execute(
+        select(MetadataRevision)
+        .where(MetadataRevision.video_id == video.id)
+        .where(MetadataRevision.metadata_type == "camera_motion")
+        .order_by(MetadataRevision.created_at.desc())
+        .limit(1)
+    )
+    revision = revision_result.scalar_one_or_none()
+
+    if revision:
+        return revision.new_value  # Return human-revised data (already normalized)
+
+    # Fall back to original VSG data with normalization
+    loader = VSGLoader(video.vsg_path)
+    return normalize_camera_motion(loader.camera_motion)
 
 
 @router.get("/cache/status")

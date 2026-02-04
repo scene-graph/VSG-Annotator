@@ -25,6 +25,17 @@ export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps)
   const [direction, setDirection] = useState(edge.attributes?.direction || 'none');
   const [trajectory, setTrajectory] = useState(edge.attributes?.trajectory || 'curved');
 
+  // Sync local state when edge prop changes (fixes stale state after modifications)
+  useEffect(() => {
+    setPredicate(edge.predicate);
+    setStartFrame(edge.time_period.start_frame);
+    setEndFrame(edge.time_period.end_frame);
+    setVelocity(edge.attributes?.velocity || 'moderate');
+    setDirection(edge.attributes?.direction || 'none');
+    setTrajectory(edge.attributes?.trajectory || 'curved');
+  }, [edge.edge_id, edge.predicate, edge.time_period.start_frame, edge.time_period.end_frame,
+      edge.attributes?.velocity, edge.attributes?.direction, edge.attributes?.trajectory]);
+
   const { data: predicatesData } = usePredicates(videoId, edge.edge_type);
   const predicates = predicatesData?.predicates || [];
 

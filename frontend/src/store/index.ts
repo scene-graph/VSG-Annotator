@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Edge, EdgeFilters, EdgeType, Node, User, VideoDetail } from '../types';
+import type { Edge, EdgeFilters, Node, User, VideoDetail } from '../types';
 
 // Edge drag state for sharing between EdgeTimeline and TrackletTimeline
 export interface EdgeDragState {
@@ -8,6 +8,9 @@ export interface EdgeDragState {
   currentStartFrame: number;
   currentEndFrame: number;
 }
+
+// Annotation mode: viewing nodes or edges
+export type AnnotationMode = 'nodes' | 'edges';
 
 interface AppState {
   // Current video
@@ -26,9 +29,17 @@ interface AppState {
   edges: Edge[];
   setEdges: (edges: Edge[]) => void;
 
-  // Selected edge
+  // Selected edge (mutually exclusive with selectedNode)
   selectedEdge: Edge | null;
   setSelectedEdge: (edge: Edge | null) => void;
+
+  // Selected node (mutually exclusive with selectedEdge)
+  selectedNode: Node | null;
+  setSelectedNode: (node: Node | null) => void;
+
+  // Annotation mode (auto-switches based on selection)
+  annotationMode: AnnotationMode;
+  setAnnotationMode: (mode: AnnotationMode) => void;
 
   // Filters
   filters: EdgeFilters;
@@ -77,18 +88,45 @@ export const useAppStore = create<AppState>((set) => ({
   edges: [],
   setEdges: (edges) => set({ edges }),
 
-  // Selected edge
+  // Selected edge (mutually exclusive with selectedNode)
   selectedEdge: null,
   setSelectedEdge: (edge) => {
-    // When selecting an edge, track source and target nodes separately
+    // When selecting an edge, clear selected node and track source/target nodes
     if (edge) {
       const sources = Array.isArray(edge.source) ? edge.source : [edge.source];
       const targets = Array.isArray(edge.target) ? edge.target : [edge.target];
-      set({ selectedEdge: edge, sourceNodes: sources, targetNodes: targets });
+      set({
+        selectedEdge: edge,
+        selectedNode: null,  // Clear node selection
+        sourceNodes: sources,
+        targetNodes: targets,
+        annotationMode: 'edges',  // Auto-switch to edges mode
+      });
     } else {
       set({ selectedEdge: null, sourceNodes: [], targetNodes: [] });
     }
   },
+
+  // Selected node (mutually exclusive with selectedEdge)
+  selectedNode: null,
+  setSelectedNode: (node) => {
+    // When selecting a node, clear selected edge
+    if (node) {
+      set({
+        selectedNode: node,
+        selectedEdge: null,  // Clear edge selection
+        sourceNodes: [],
+        targetNodes: [],
+        annotationMode: 'nodes',  // Auto-switch to nodes mode
+      });
+    } else {
+      set({ selectedNode: null });
+    }
+  },
+
+  // Annotation mode
+  annotationMode: 'edges',
+  setAnnotationMode: (mode) => set({ annotationMode: mode }),
 
   // Filters
   filters: initialFilters,
@@ -127,6 +165,8 @@ export const useCurrentFrame = () => useAppStore((state) => state.currentFrame);
 export const useNodes = () => useAppStore((state) => state.nodes);
 export const useEdges = () => useAppStore((state) => state.edges);
 export const useSelectedEdge = () => useAppStore((state) => state.selectedEdge);
+export const useSelectedNode = () => useAppStore((state) => state.selectedNode);
+export const useAnnotationMode = () => useAppStore((state) => state.annotationMode);
 export const useFilters = () => useAppStore((state) => state.filters);
 export const useCurrentUser = () => useAppStore((state) => state.currentUser);
 export const useSourceNodes = () => useAppStore((state) => state.sourceNodes);

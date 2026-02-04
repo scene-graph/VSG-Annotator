@@ -4,10 +4,12 @@ import json
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.revision_tracker import RevisionTracker
 from backend.core.vsg_loader import VSGLoader
+from backend.models.database import MetadataRevision, Video
 
 
 class ExportService:
@@ -107,12 +109,54 @@ class ExportService:
             elif rev.edge_type == "fg_bg":
                 vsg["foreground_background_relations"]["edges"].append(new_edge)
 
+        # Apply metadata revisions (scene_info, camera_motion)
+        vsg = await self._apply_metadata_revisions(vsg, user_id)
+
         # Update metadata
         vsg["metadata"]["exported_at"] = datetime.now().isoformat()
         vsg["metadata"]["human_annotated"] = True
 
         # Update summary
         vsg["summary"] = self._build_summary(vsg)
+
+        return vsg
+
+    async def _apply_metadata_revisions(
+        self, vsg: dict, user_id: int | None = None
+    ) -> dict:
+        """Apply metadata revisions (scene_info, camera_motion) to VSG."""
+        # Get video record
+        video_id = self.vsg_loader.video_id
+        result = await self.session.execute(
+            select(Video).where(Video.video_id == video_id)
+        )
+        video = result.scalar_one_or_none()
+
+        if video is None:
+            return vsg
+
+        # Get latest metadata revisions
+        for metadata_type in ["scene_info", "camera_motion"]:
+            query = (
+                select(MetadataRevision)
+                .where(
+                    MetadataRevision.video_id == video.id,
+                    MetadataRevision.metadata_type == metadata_type,
+                )
+                .order_by(MetadataRevision.created_at.desc())
+                .limit(1)
+            )
+
+            if user_id is not None:
+                query = query.where(MetadataRevision.user_id == user_id)
+
+            result = await self.session.execute(query)
+            revision = result.scalar_one_or_none()
+
+            if revision is not None:
+                # Apply the revision
+                vsg[metadata_type] = revision.new_value
+                vsg[f"{metadata_type}_human_modified"] = True
 
         return vsg
 
@@ -220,8 +264,36 @@ class ExportService:
             "human_rejected_edges": len(
                 [e for e in static_edges + dynamic_edges + fg_bg_edges if e.get("human_rejected")]
             ),
+            "scene_info_human_modified": vsg.get("scene_info_human_modified", False),
+            "camera_motion_human_modified": vsg.get("camera_motion_human_modified", False),
         }
 
     async def get_revision_summary(self) -> dict:
         """Get a summary of all revisions for the video."""
-        return await self.tracker.get_revision_stats(self.vsg_loader.video_id)
+        edge_stats = await self.tracker.get_revision_stats(self.vsg_loader.video_id)
+
+        # Get video record
+        video_id = self.vsg_loader.video_id
+        result = await self.session.execute(
+            select(Video).where(Video.video_id == video_id)
+        )
+        video = result.scalar_one_or_none()
+
+        # Count metadata revisions
+        metadata_stats = {"scene_info": 0, "camera_motion": 0}
+        if video is not None:
+            for metadata_type in ["scene_info", "camera_motion"]:
+                result = await self.session.execute(
+                    select(MetadataRevision)
+                    .where(
+                        MetadataRevision.video_id == video.id,
+                        MetadataRevision.metadata_type == metadata_type,
+                    )
+                )
+                metadata_stats[metadata_type] = len(result.scalars().all())
+
+        return {
+            **edge_stats,
+            "scene_info_revisions": metadata_stats["scene_info"],
+            "camera_motion_revisions": metadata_stats["camera_motion"],
+        }

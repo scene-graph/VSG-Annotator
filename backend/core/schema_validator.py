@@ -63,6 +63,77 @@ SPATIAL_PREDICATES = [
     "inside",
 ]
 
+# ============================================================================
+# Scene Info Validation Constants
+# ============================================================================
+
+VALID_TRANSITION_TYPES = [
+    "cut",
+    "fade",
+    "dissolve",
+    "wipe",
+    "match_cut",
+    "jump_cut",
+    "unknown",
+]
+
+VALID_SCENE_CHANGE_RELATIONS = [
+    "indoor_to_outdoor",
+    "outdoor_to_indoor",
+    "same_place_continuation",
+    "place_change",
+    "time_jump",
+    "day_night_change",
+    "flashback",
+    "parallel_crosscut",
+    "unknown",
+]
+
+# ============================================================================
+# Camera Motion Validation Constants
+# ============================================================================
+
+VALID_CAMERA_MOTION_TYPES = [
+    "dolly",
+    "pedestal",
+    "truck",
+    "pan",
+    "tilt",
+    "roll",
+    "zoom",
+    "static",
+]
+
+VALID_CAMERA_DIRECTIONS = [
+    "in",
+    "out",
+    "up",
+    "down",
+    "left",
+    "right",
+    "cw",
+    "ccw",
+    "none",
+]
+
+VALID_STEADINESS_VALUES = [
+    "stable",
+    "slight_shake",
+    "moderate_shake",
+    "shaky",
+]
+
+VALID_INTENSITY_VALUES = [
+    "minimal",
+    "subtle",
+    "moderate",
+    "dynamic",
+]
+
+# ============================================================================
+# Edge Motion Validation Constants
+# ============================================================================
+
 # Action predicates (for dynamic-dynamic relations)
 ACTION_PREDICATES = [
     # Manipulation

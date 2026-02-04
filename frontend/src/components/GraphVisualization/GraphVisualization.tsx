@@ -152,8 +152,9 @@ export function GraphVisualization({ nodes, edges, width = 400, height = 300 }: 
       .attr('stroke', '#fff')
       .attr('stroke-width', 1.5)
       .style('cursor', 'grab')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .call(
-        d3
+        (d3
           .drag<SVGCircleElement, GraphNode>()
           .on('start', (event, d) => {
             if (!event.active) simulation.alphaTarget(0.3).restart();
@@ -168,7 +169,7 @@ export function GraphVisualization({ nodes, edges, width = 400, height = 300 }: 
             if (!event.active) simulation.alphaTarget(0);
             d.fx = null;
             d.fy = null;
-          })
+          })) as any
       );
 
     // Create node labels

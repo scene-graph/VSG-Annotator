@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { useAppStore, useCurrentFrame, useSourceNodes, useTargetNodes } from '../../store';
+import { useAppStore, useCurrentFrame, useSourceNodes, useTargetNodes, useSelectedNode } from '../../store';
 import { videosApi } from '../../services/api';
 import type { Node, BBox } from '../../types';
 import { BBoxOverlay } from './BBoxOverlay';
@@ -29,6 +29,7 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
   const setIsPlaying = useAppStore((state) => state.setIsPlaying);
   const sourceNodes = useSourceNodes();
   const targetNodes = useTargetNodes();
+  const selectedNode = useSelectedNode();
 
   const [frameReady, setFrameReady] = useState(false);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -93,22 +94,24 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
   const displayHeight = resolution.height * scale;
 
   // Get bboxes for current frame using pre-indexed map (O(1))
-  // Returns role for each bbox: 'source', 'target', or null
-  const getBBoxesForFrame = useCallback((): { nodeId: string; category: string; bbox: BBox; role: 'source' | 'target' | null }[] => {
+  // Returns role for each bbox: 'source', 'target', 'selected', or null
+  const getBBoxesForFrame = useCallback((): { nodeId: string; category: string; bbox: BBox; role: 'source' | 'target' | 'selected' | null }[] => {
     const frameBboxes = bboxesByFrame.get(currentFrame);
     if (!frameBboxes) return [];
 
     return frameBboxes.map(({ nodeId, category, bbox }) => {
-      // Determine role based on source/target node arrays
-      let role: 'source' | 'target' | null = null;
-      if (sourceNodes.includes(nodeId)) {
+      // Determine role based on selection state
+      let role: 'source' | 'target' | 'selected' | null = null;
+      if (selectedNode?.node_id === nodeId) {
+        role = 'selected';
+      } else if (sourceNodes.includes(nodeId)) {
         role = 'source';
       } else if (targetNodes.includes(nodeId)) {
         role = 'target';
       }
       return { nodeId, category, bbox, role };
     });
-  }, [currentFrame, bboxesByFrame, sourceNodes, targetNodes]);
+  }, [currentFrame, bboxesByFrame, sourceNodes, targetNodes, selectedNode]);
 
   // Load a frame into the buffer
   const loadFrame = useCallback((frameIdx: number): Promise<HTMLImageElement> => {

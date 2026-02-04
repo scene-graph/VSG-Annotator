@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Edge, MotionAttributes, TimePeriod } from '../../types';
-import { useAppStore, useCurrentUser, useSelectedEdge } from '../../store';
+import { useAppStore, useCurrentUser, useSelectedEdge, useNodes } from '../../store';
 import { useAcceptEdge, useRejectEdge, useModifyEdge, useEdgeHistory } from '../../hooks';
 import { EdgeEditor } from './EdgeEditor';
 import { ValidationReasoning } from './ValidationReasoning';
@@ -14,9 +14,12 @@ interface EdgeReviewProps {
 export function EdgeReview({ videoId }: EdgeReviewProps) {
   const selectedEdge = useSelectedEdge();
   const setSelectedEdge = useAppStore((state) => state.setSelectedEdge);
+  const setEdges = useAppStore((state) => state.setEdges);
   const currentUser = useCurrentUser();
   const showValidationReasoning = useAppStore((state) => state.showValidationReasoning);
   const setShowValidationReasoning = useAppStore((state) => state.setShowValidationReasoning);
+  const nodes = useNodes();
+  const setSelectedNode = useAppStore((state) => state.setSelectedNode);
 
   const [isEditing, setIsEditing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -48,6 +51,13 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     ? selectedEdge.target_category
     : [selectedEdge.target_category];
 
+  const handleNodeClick = (nodeId: string) => {
+    const node = nodes.find(n => n.node_id === nodeId);
+    if (node) {
+      setSelectedNode(node);
+    }
+  };
+
   const handleAccept = async () => {
     if (!currentUser) {
       alert('Please select a user first');
@@ -61,6 +71,21 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
       user_id: currentUser.id,
       notes: notes || undefined,
     });
+
+    // Update selected edge to reflect accept action immediately
+    const updatedEdge: Edge = {
+      ...selectedEdge,
+      has_revision: true,
+      revision_action: 'accept',
+    };
+    setSelectedEdge(updatedEdge);
+
+    // Also update the edges array so EdgeTimeline reflects changes immediately
+    const currentEdges = useAppStore.getState().edges;
+    const updatedEdges = currentEdges.map(e =>
+      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
+    );
+    setEdges(updatedEdges);
 
     setNotes('');
   };
@@ -78,6 +103,21 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
       user_id: currentUser.id,
       notes: notes || undefined,
     });
+
+    // Update selected edge to reflect reject action immediately
+    const updatedEdge: Edge = {
+      ...selectedEdge,
+      has_revision: true,
+      revision_action: 'reject',
+    };
+    setSelectedEdge(updatedEdge);
+
+    // Also update the edges array so EdgeTimeline reflects changes immediately
+    const currentEdges = useAppStore.getState().edges;
+    const updatedEdges = currentEdges.map(e =>
+      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
+    );
+    setEdges(updatedEdges);
 
     setNotes('');
   };
@@ -102,6 +142,24 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
       new_attributes: changes.attributes,
       notes: notes || undefined,
     });
+
+    // Update the selected edge in store with the new values so UI reflects changes immediately
+    const updatedEdge: Edge = {
+      ...selectedEdge,
+      predicate: changes.predicate ?? selectedEdge.predicate,
+      time_period: changes.time_period ?? selectedEdge.time_period,
+      attributes: changes.attributes ?? selectedEdge.attributes,
+      has_revision: true,
+      revision_action: 'modify',
+    };
+    setSelectedEdge(updatedEdge);
+
+    // Also update the edges array so EdgeTimeline reflects changes immediately
+    const currentEdges = useAppStore.getState().edges;
+    const updatedEdges = currentEdges.map(e =>
+      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
+    );
+    setEdges(updatedEdges);
 
     setIsEditing(false);
     setNotes('');
@@ -144,7 +202,8 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
                 {sourceCategories.map((cat, i) => (
                   <span
                     key={sources[i]}
-                    className="inline-block px-2 py-1 rounded mr-1 mb-1 border"
+                    onClick={() => handleNodeClick(sources[i])}
+                    className="inline-block px-2 py-1 rounded mr-1 mb-1 border cursor-pointer hover:opacity-80 transition-opacity"
                     style={{
                       backgroundColor: 'rgba(0, 212, 255, 0.15)',
                       borderColor: '#00d4ff',
@@ -168,7 +227,8 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
                 {targetCategories.map((cat, i) => (
                   <span
                     key={targets[i]}
-                    className="inline-block px-2 py-1 rounded mr-1 mb-1 border"
+                    onClick={() => handleNodeClick(targets[i])}
+                    className="inline-block px-2 py-1 rounded mr-1 mb-1 border cursor-pointer hover:opacity-80 transition-opacity"
                     style={{
                       backgroundColor: 'rgba(255, 0, 212, 0.15)',
                       borderColor: '#ff00d4',
@@ -197,19 +257,28 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
         {/* Motion attributes (for dynamic edges) */}
         {selectedEdge.attributes && (
           <div className="bg-gray-700 rounded p-3">
-            <div className="text-gray-400 text-xs uppercase mb-1">Motion Attributes</div>
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <span className="text-gray-400 text-xs">Velocity:</span>
-                <span className="text-white ml-1">{selectedEdge.attributes.velocity}</span>
+            <div className="text-gray-400 text-xs uppercase mb-2">Motion Attributes</div>
+            <div className="space-y-2">
+              {/* Velocity Row */}
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400 text-sm">Velocity</span>
+                <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-sm">
+                  {selectedEdge.attributes.velocity}
+                </span>
               </div>
-              <div>
-                <span className="text-gray-400 text-xs">Direction:</span>
-                <span className="text-white ml-1">{selectedEdge.attributes.direction}</span>
+              {/* Direction Row */}
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400 text-sm">Direction</span>
+                <span className="px-2 py-0.5 rounded bg-green-500/20 text-green-400 text-sm">
+                  {selectedEdge.attributes.direction}
+                </span>
               </div>
-              <div>
-                <span className="text-gray-400 text-xs">Trajectory:</span>
-                <span className="text-white ml-1">{selectedEdge.attributes.trajectory}</span>
+              {/* Trajectory Row */}
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400 text-sm">Trajectory</span>
+                <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-400 text-sm">
+                  {selectedEdge.attributes.trajectory}
+                </span>
               </div>
             </div>
           </div>

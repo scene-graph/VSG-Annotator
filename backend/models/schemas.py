@@ -336,23 +336,13 @@ class ExportResponse(BaseModel):
 # ============================================================================
 
 
-class SceneAttributes(BaseModel):
-    """Scene attributes for video-level metadata."""
-
-    environment: Literal["indoor", "outdoor", "vehicle"] = "indoor"
-    lighting_source: Literal["natural", "artificial", "mixed", "unknown"] = "unknown"
-    lighting_level: Literal["bright", "normal", "dim", "dark"] = "normal"
-    spatial_layout: Literal["enclosed", "semi_open", "open", "close_up"] = "enclosed"
-    crowdedness: Literal["empty", "sparse", "moderate", "crowded"] = "moderate"
-    activity_level: Literal["static", "low", "moderate", "high"] = "moderate"
-
-
 class SceneInfo(BaseModel):
     """Scene info for video-level metadata."""
 
-    category: str = "unknown"
+    category: list[str] = Field(default_factory=lambda: ["unknown"])
+    transition_types: list[str] = Field(default_factory=lambda: ["unknown"])
+    scene_change_relations: list[str] = Field(default_factory=lambda: ["unknown"])
     confidence: float = 0.5
-    attributes: SceneAttributes = Field(default_factory=SceneAttributes)
 
 
 class SceneInfoModifyRequest(BaseModel):
@@ -370,7 +360,7 @@ class SceneInfoModifyRequest(BaseModel):
 
 
 class CameraMotionPrimary(BaseModel):
-    """Primary camera motion descriptor."""
+    """Primary camera motion descriptor with movement characteristics."""
 
     type: Literal[
         "dolly", "pedestal", "truck", "pan", "tilt", "roll", "zoom", "static"
@@ -378,30 +368,16 @@ class CameraMotionPrimary(BaseModel):
     direction: Literal[
         "in", "out", "up", "down", "left", "right", "cw", "ccw", "none"
     ] = "none"
-
-
-class CameraMotionAttributes(BaseModel):
-    """Camera motion attributes."""
-
-    style: Literal[
-        "handheld", "stabilized", "tripod", "mounted", "drone"
-    ] = "stabilized"
     steadiness: Literal[
-        "stable", "slight_shake", "moderate_shake", "shaky", "complex", "minor"
+        "stable", "slight_shake", "moderate_shake", "shaky"
     ] = "stable"
     intensity: Literal["minimal", "subtle", "moderate", "dynamic"] = "minimal"
-    dynamism: Literal["static", "low", "moderate", "high"] = "static"
-    follows_action: Literal["tracking", "observational", "independent"] = "observational"
 
 
 class CameraMotion(BaseModel):
     """Camera motion for video-level metadata."""
 
-    has_motion: bool = False
-    motion_clarity: Literal["simple", "complex", "minor"] = "simple"
     primary_motion: CameraMotionPrimary = Field(default_factory=CameraMotionPrimary)
-    attributes: Optional[CameraMotionAttributes] = None
-    purpose_of_movement: Optional[str] = None
     confidence: float = 0.5
     description: Optional[str] = None
 

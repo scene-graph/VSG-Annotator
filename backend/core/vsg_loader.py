@@ -73,6 +73,16 @@ class VSGLoader:
         """Get video resolution."""
         return self.metadata.get("resolution", {"width": 1920, "height": 1080})
 
+    @property
+    def scene_info(self) -> Optional[dict[str, Any]]:
+        """Get scene info from VSG."""
+        return self.data.get("scene_info")
+
+    @property
+    def camera_motion(self) -> Optional[dict[str, Any]]:
+        """Get camera motion from VSG."""
+        return self.data.get("camera_motion")
+
     def get_static_nodes(self) -> list[dict]:
         """Get raw static nodes from VSG."""
         return self.data.get("static_scene_graph", {}).get("nodes", [])

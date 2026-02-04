@@ -184,41 +184,23 @@ export interface EdgeStats {
 }
 
 // Scene Info types
-export interface SceneAttributes {
-  environment: 'indoor' | 'outdoor' | 'vehicle';
-  lighting_source: 'natural' | 'artificial' | 'mixed' | 'unknown';
-  lighting_level: 'bright' | 'normal' | 'dim' | 'dark';
-  spatial_layout: 'enclosed' | 'semi_open' | 'open' | 'close_up';
-  crowdedness: 'empty' | 'sparse' | 'moderate' | 'crowded';
-  activity_level: 'static' | 'low' | 'moderate' | 'high';
-}
-
 export interface SceneInfo {
-  category: string;
+  category: string[];
+  transition_types: string[];
+  scene_change_relations: string[];
   confidence: number;
-  attributes: SceneAttributes;
 }
 
 // Camera Motion types
 export interface CameraMotionPrimary {
   type: 'dolly' | 'pedestal' | 'truck' | 'pan' | 'tilt' | 'roll' | 'zoom' | 'static';
   direction: 'in' | 'out' | 'up' | 'down' | 'left' | 'right' | 'cw' | 'ccw' | 'none';
-}
-
-export interface CameraMotionAttributes {
-  style: 'handheld' | 'stabilized' | 'tripod' | 'mounted' | 'drone';
-  steadiness: 'stable' | 'slight_shake' | 'moderate_shake' | 'shaky' | 'complex' | 'minor';
+  steadiness: 'stable' | 'slight_shake' | 'moderate_shake' | 'shaky';
   intensity: 'minimal' | 'subtle' | 'moderate' | 'dynamic';
-  dynamism: 'static' | 'low' | 'moderate' | 'high';
-  follows_action: 'tracking' | 'observational' | 'independent';
 }
 
 export interface CameraMotion {
-  has_motion: boolean;
-  motion_clarity: 'simple' | 'complex' | 'minor';
   primary_motion: CameraMotionPrimary;
-  attributes?: CameraMotionAttributes;
-  purpose_of_movement?: string;
   confidence: number;
   description?: string;
 }
