@@ -15,10 +15,11 @@ from backend.models.database import MetadataRevision, Video
 class ExportService:
     """Service for exporting annotated VSG files."""
 
-    def __init__(self, session: AsyncSession, vsg_loader: VSGLoader):
-        """Initialize with database session and VSG loader."""
+    def __init__(self, session: AsyncSession, vsg_loader: VSGLoader, video_id: str):
+        """Initialize with database session, VSG loader, and database video_id."""
         self.session = session
         self.vsg_loader = vsg_loader
+        self.video_id = video_id  # Use DB video_id, not VSG metadata video_id
         self.tracker = RevisionTracker(session)
 
     async def export(
@@ -42,8 +43,7 @@ class ExportService:
         vsg = self.vsg_loader.load().copy()
 
         # Get all revisions
-        video_id = self.vsg_loader.video_id
-        revisions = await self.tracker.get_video_revisions(video_id)
+        revisions = await self.tracker.get_video_revisions(self.video_id)
 
         # Build revision maps
         accepted_edges: set[str] = set()
@@ -95,7 +95,7 @@ class ExportService:
         )
 
         # Add newly created edges
-        created_edges = await self.tracker.get_created_edges(video_id)
+        created_edges = await self.tracker.get_created_edges(self.video_id)
         for rev in created_edges:
             if user_id is not None and rev.user_id != user_id:
                 continue
@@ -126,9 +126,8 @@ class ExportService:
     ) -> dict:
         """Apply metadata revisions (scene_info, camera_motion) to VSG."""
         # Get video record
-        video_id = self.vsg_loader.video_id
         result = await self.session.execute(
-            select(Video).where(Video.video_id == video_id)
+            select(Video).where(Video.video_id == self.video_id)
         )
         video = result.scalar_one_or_none()
 
@@ -210,10 +209,34 @@ class ExportService:
 
     def _build_edge_from_revision(self, rev) -> dict:
         """Build an edge dict from a create revision."""
+        source = json.loads(rev.new_source) if rev.new_source else []
+        target = json.loads(rev.new_target) if rev.new_target else []
+
+        # Look up node categories
+        all_nodes = self.vsg_loader.get_all_nodes()
+        source_list = source if isinstance(source, list) else [source]
+        target_list = target if isinstance(target, list) else [target]
+
+        source_category = [
+            all_nodes[nid].category if nid in all_nodes else "unknown"
+            for nid in source_list
+        ]
+        target_category = [
+            all_nodes[nid].category if nid in all_nodes else "unknown"
+            for nid in target_list
+        ]
+
+        # For static/dynamic edges with single source/target, use string instead of list
+        if rev.edge_type in ("static", "dynamic"):
+            source_category = source_category[0] if len(source_category) == 1 else source_category
+            target_category = target_category[0] if len(target_category) == 1 else target_category
+
         edge = {
             "edge_id": rev.edge_id,
-            "source": json.loads(rev.new_source) if rev.new_source else [],
-            "target": json.loads(rev.new_target) if rev.new_target else [],
+            "source": source,
+            "target": target,
+            "source_category": source_category,
+            "target_category": target_category,
             "predicate": rev.new_predicate or "",
             "time_period": rev.new_time_period or {"start_frame": 0, "end_frame": 0},
             "confidence": 1.0,
@@ -270,12 +293,11 @@ class ExportService:
 
     async def get_revision_summary(self) -> dict:
         """Get a summary of all revisions for the video."""
-        edge_stats = await self.tracker.get_revision_stats(self.vsg_loader.video_id)
+        edge_stats = await self.tracker.get_revision_stats(self.video_id)
 
         # Get video record
-        video_id = self.vsg_loader.video_id
         result = await self.session.execute(
-            select(Video).where(Video.video_id == video_id)
+            select(Video).where(Video.video_id == self.video_id)
         )
         video = result.scalar_one_or_none()
 

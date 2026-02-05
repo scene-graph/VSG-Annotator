@@ -39,7 +39,7 @@ async def export_vsg(
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = ExportService(db, loader)
+    service = ExportService(db, loader, video_id)
 
     vsg = await service.export(
         include_rejected=include_rejected,
@@ -73,7 +73,7 @@ async def download_vsg(
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = ExportService(db, loader)
+    service = ExportService(db, loader, video_id)
 
     vsg = await service.export(
         include_rejected=include_rejected,
@@ -107,7 +107,7 @@ async def get_export_summary(
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = ExportService(db, loader)
+    service = ExportService(db, loader, video_id)
 
     summary = await service.get_revision_summary()
     original_summary = loader.get_summary()
