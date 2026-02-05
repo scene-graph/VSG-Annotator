@@ -37,7 +37,7 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
 
   // Refs to access latest values from D3 callbacks (avoid stale closures)
   const dragStateRef = useRef<DragState | null>(null);
-  const handleDragEndRef = useRef<(edge: Edge, newTimePeriod: TimePeriod) => Promise<void>>();
+  const handleDragEndRef = useRef<(edge: Edge, newTimePeriod: TimePeriod) => void>();
   const edgesRef = useRef<Edge[]>([]);
   const justModifiedEdgeIdRef = useRef<string | null>(null);
   const currentUserRef = useRef<typeof currentUser>(null);
@@ -66,31 +66,50 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
   }, [edges]);
 
   // Handle drag end - save modification to API
-  const handleDragEnd = useCallback(async (edge: Edge, newTimePeriod: TimePeriod) => {
+  const handleDragEnd = useCallback((edge: Edge, newTimePeriod: TimePeriod) => {
     if (!currentUser || !currentVideo) return;
 
-    try {
-      await modifyMutation.mutateAsync({
-        video_id: currentVideo.video_id,
-        edge_id: edge.edge_id,
-        edge_type: edge.edge_type,
-        user_id: currentUser.id,
-        new_time_period: newTimePeriod,
-      });
+    // Mark this edge as just modified so we can scroll to it
+    justModifiedEdgeIdRef.current = edge.edge_id;
 
-      // Mark this edge as just modified so we can scroll to it
-      justModifiedEdgeIdRef.current = edge.edge_id;
+    // Build updated edge
+    const updatedEdge: Edge = {
+      ...edge,
+      time_period: newTimePeriod,
+      has_revision: true,
+      revision_action: 'modify'
+    };
 
-      // Optimistic update
-      const updatedEdge: Edge = { ...edge, time_period: newTimePeriod, has_revision: true, revision_action: 'modify' };
-      setEdges(edges.map(e => e.edge_id === edge.edge_id ? updatedEdge : e));
-      if (selectedEdge?.edge_id === edge.edge_id) {
-        setSelectedEdge(updatedEdge);
-      }
-    } catch (error) {
-      console.error('Failed to modify edge:', error);
+    // Optimistic update FIRST using current store state (not stale closure)
+    const currentEdges = useAppStore.getState().edges;
+    const updatedEdges = currentEdges.map(e =>
+      e.edge_id === edge.edge_id ? updatedEdge : e
+    );
+    setEdges(updatedEdges);
+
+    if (selectedEdge?.edge_id === edge.edge_id) {
+      setSelectedEdge(updatedEdge);
     }
-  }, [currentUser, currentVideo, modifyMutation, edges, selectedEdge, setEdges, setSelectedEdge]);
+
+    // API call in background (non-blocking)
+    modifyMutation.mutate({
+      video_id: currentVideo.video_id,
+      edge_id: edge.edge_id,
+      edge_type: edge.edge_type,
+      user_id: currentUser.id,
+      new_time_period: newTimePeriod,
+    }, {
+      onError: (error) => {
+        console.error('Failed to modify edge:', error);
+        // Optionally revert the optimistic update here
+      }
+    });
+  }, [currentUser, currentVideo, modifyMutation, selectedEdge, setEdges, setSelectedEdge]);
+  // Note: 'edges' removed from deps since we use getState() instead
+
+  // Sync edgesRef immediately during render (not in useEffect)
+  // This ensures the ref is current when D3 drag callbacks fire
+  edgesRef.current = edges;
 
   // Keep refs in sync with latest values
   useEffect(() => {
@@ -102,12 +121,15 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
   }, [handleDragEnd]);
 
   useEffect(() => {
-    edgesRef.current = edges;
-  }, [edges]);
-
-  useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
+
+  // Track selection changes - mark the edge for scroll-into-view
+  useEffect(() => {
+    if (selectedEdge) {
+      justModifiedEdgeIdRef.current = selectedEdge.edge_id;
+    }
+  }, [selectedEdge?.edge_id]);
 
   // Sync drag state to global store for TrackletTimeline to display
   useEffect(() => {
@@ -478,7 +500,7 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
     });
 
     return () => cancelAnimationFrame(rafId);
-  }, [sortedEdges]);
+  }, [sortedEdges, selectedEdge?.edge_id]);
 
   const contentHeight = Math.max(
     height,
