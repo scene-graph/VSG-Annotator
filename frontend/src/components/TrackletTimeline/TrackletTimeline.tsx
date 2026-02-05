@@ -1,7 +1,7 @@
 import { useRef, useEffect, useMemo } from 'react';
 import * as d3 from 'd3';
 import type { Node } from '../../types';
-import { useAppStore, useCurrentFrame, useSelectedEdge, useSelectedNode, useSourceNodes, useTargetNodes, useEdgeDragState } from '../../store';
+import { useAppStore, useCurrentFrame, useSelectedEdge, useSelectedNode, useSourceNodes, useTargetNodes, useEdgeDragState, useEdgeCreation } from '../../store';
 
 interface TrackletTimelineProps {
   nodes: Node[];
@@ -76,6 +76,11 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
   const sourceNodes = useSourceNodes();
   const targetNodes = useTargetNodes();
   const edgeDragState = useEdgeDragState();
+
+  // Edge creation state
+  const edgeCreation = useEdgeCreation();
+  const toggleSourceNode = useAppStore((state) => state.toggleSourceNode);
+  const toggleTargetNode = useAppStore((state) => state.toggleTargetNode);
 
   // Sort nodes by category, then by start frame
   const sortedNodes = useMemo(() => {
@@ -262,10 +267,20 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
       const isSelected = selectedNode?.node_id === node.node_id;
       const hasEdgeSelection = selectedEdge !== null;
       const hasNodeSelection = selectedNode !== null;
+      const isInCreationMode = edgeCreation.isCreating;
 
       // Determine color based on context
       let color = COLORS.unselected;
-      if (isSelected) {
+      if (isInCreationMode) {
+        // Edge creation mode: highlight source/target nodes
+        if (isSource) {
+          color = COLORS.source;
+        } else if (isTarget) {
+          color = COLORS.target;
+        } else {
+          color = node.is_static ? COLORS.static : COLORS.dynamic;
+        }
+      } else if (isSelected) {
         color = COLORS.selected;
       } else if (isSource) {
         color = COLORS.source;
@@ -278,7 +293,14 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
 
       // Determine opacity
       let opacity = 0.8;
-      if (hasEdgeSelection && !isSource && !isTarget) {
+      if (isInCreationMode) {
+        // During creation mode, selected nodes are bright, others are dimmed
+        if (isSource || isTarget) {
+          opacity = 1.0;
+        } else {
+          opacity = 0.5;
+        }
+      } else if (hasEdgeSelection && !isSource && !isTarget) {
         opacity = 0.3;
       } else if (hasNodeSelection && !isSelected) {
         opacity = 0.4;
@@ -300,7 +322,24 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         .attr('font-size', '11px')
         .attr('fill', labelColor)
         .attr('font-weight', isHighlighted ? 'bold' : 'normal')
-        .text(label);
+        .attr('cursor', 'pointer')
+        .text(label)
+        .on('click', () => {
+          // Handle edge creation mode
+          if (edgeCreation.isCreating) {
+            if (edgeCreation.step === 'select-source') {
+              toggleSourceNode(node.node_id);
+            } else if (edgeCreation.step === 'select-target') {
+              toggleTargetNode(node.node_id);
+            }
+          } else {
+            // Normal mode: select this node and seek to first frame
+            setSelectedNode(node);
+            if (segments.length > 0) {
+              setCurrentFrame(segments[0].start);
+            }
+          }
+        });
 
       // Draw each contiguous segment as a separate bar
       segments.forEach((segment) => {
@@ -321,14 +360,23 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
           .attr('stroke-width', isHighlighted ? 2 : 0)
           .on('click', (event) => {
             event.stopPropagation();
-            // Click on tracklet: select the node and seek to that frame
+            // Click on tracklet: seek to that frame
             const [mouseX] = d3.pointer(event);
             const frame = Math.round(xScale.invert(mouseX));
             const clampedFrame = Math.max(segment.start, Math.min(segment.end, frame));
             setCurrentFrame(clampedFrame);
 
-            // Select this node
-            setSelectedNode(node);
+            // Handle edge creation mode
+            if (edgeCreation.isCreating) {
+              if (edgeCreation.step === 'select-source') {
+                toggleSourceNode(node.node_id);
+              } else if (edgeCreation.step === 'select-target') {
+                toggleTargetNode(node.node_id);
+              }
+            } else {
+              // Normal mode: select this node
+              setSelectedNode(node);
+            }
           })
           .on('mouseover', function () {
             d3.select(this).attr('fill-opacity', 1);
@@ -349,6 +397,37 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
             .text(`${segment.start}-${segment.end}`);
         }
       });
+
+      // Add badge indicator for edge creation mode
+      if (isInCreationMode && (isSource || isTarget)) {
+        const badgeColor = isSource ? COLORS.source : COLORS.target;
+        const badgeText = isSource ? 'S' : 'T';
+        const firstSegment = segments[0];
+        if (firstSegment) {
+          const badgeX = xScale(firstSegment.start) - 12;
+
+          // Badge circle background
+          g.append('circle')
+            .attr('cx', badgeX)
+            .attr('cy', y + LANE_HEIGHT / 2)
+            .attr('r', 8)
+            .attr('fill', badgeColor)
+            .attr('stroke', '#1f2937')
+            .attr('stroke-width', 1)
+            .attr('pointer-events', 'none');
+
+          // Badge text
+          g.append('text')
+            .attr('x', badgeX)
+            .attr('y', y + LANE_HEIGHT / 2 + 4)
+            .attr('text-anchor', 'middle')
+            .attr('font-size', '10px')
+            .attr('font-weight', 'bold')
+            .attr('fill', '#fff')
+            .attr('pointer-events', 'none')
+            .text(badgeText);
+        }
+      }
     });
 
     // Current frame indicator (red vertical line)
@@ -381,7 +460,7 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         const frame = Math.round(xScale.invert(mouseX));
         setCurrentFrame(Math.max(0, Math.min(totalFrames - 1, frame)));
       });
-  }, [sortedNodes, totalFrames, currentFrame, selectedEdge, selectedNode, sourceNodes, targetNodes, setCurrentFrame, setSelectedNode, height, edgeDragState]);
+  }, [sortedNodes, totalFrames, currentFrame, selectedEdge, selectedNode, sourceNodes, targetNodes, setCurrentFrame, setSelectedNode, height, edgeDragState, edgeCreation, toggleSourceNode, toggleTargetNode]);
 
   // Track selection changes - mark the node as just selected
   useEffect(() => {
@@ -448,10 +527,53 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
 
   return (
     <div className="bg-gray-800 rounded-lg overflow-hidden">
+      {/* Edge Creation Mode Banner */}
+      {edgeCreation.isCreating && (
+        <div className="bg-green-600/20 border-b border-green-500 px-3 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            <span className="text-green-400 font-medium">
+              {edgeCreation.step === 'select-source'
+                ? 'Click nodes to select source(s)'
+                : edgeCreation.step === 'select-target'
+                ? 'Click nodes to select target(s)'
+                : 'Configure edge in sidebar'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-green-300">
+              Sources: {edgeCreation.sourceNodeIds.length}
+            </span>
+            <span className="text-gray-500">|</span>
+            <span className="text-green-300">
+              Targets: {edgeCreation.targetNodeIds.length}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Legend */}
       <div className="flex items-center gap-4 px-3 py-2 border-b border-gray-700">
         <span className="text-gray-400 text-sm font-medium">Object Tracklets</span>
-        {selectedEdge ? (
+        {edgeCreation.isCreating ? (
+          // Edge creation mode: show Source/Target colors
+          <>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.source }} />
+              <span className="text-gray-300 text-xs">Source</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.target }} />
+              <span className="text-gray-300 text-xs">Target</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded" style={{ backgroundColor: COLORS.unselected }} />
+              <span className="text-gray-300 text-xs">Unselected</span>
+            </div>
+          </>
+        ) : selectedEdge ? (
           // Edge selection: show Source/Target/Other
           <>
             <div className="flex items-center gap-1">
