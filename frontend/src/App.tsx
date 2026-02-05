@@ -291,6 +291,16 @@ function UserSelector() {
     queryFn: usersApi.list,
   });
 
+  // Auto-select admin user on initial load
+  useEffect(() => {
+    if (users && !currentUser) {
+      const adminUser = users.find((u) => u.username === 'admin');
+      if (adminUser) {
+        setCurrentUser(adminUser);
+      }
+    }
+  }, [users, currentUser, setCurrentUser]);
+
   return (
     <div className="flex items-center gap-2">
       <span className="text-gray-400 text-sm">User:</span>
