@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Edge, MotionAttributes, TimePeriod } from '../../types';
 import { useAppStore, useCurrentUser, useSelectedEdge, useNodes, useEdgeCreation } from '../../store';
-import { useAcceptEdge, useRejectEdge, useModifyEdge, useEdgeHistory } from '../../hooks';
+import { useAcceptEdge, useRejectEdge, useModifyEdge, useDeleteEdge, useEdgeHistory } from '../../hooks';
 import { EdgeEditor } from './EdgeEditor';
 import { EdgeCreator } from './EdgeCreator';
 import { ValidationReasoning } from './ValidationReasoning';
@@ -34,6 +34,7 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
   const acceptMutation = useAcceptEdge();
   const rejectMutation = useRejectEdge();
   const modifyMutation = useModifyEdge();
+  const deleteMutation = useDeleteEdge();
 
   const { data: history } = useEdgeHistory(
     videoId,
@@ -187,6 +188,31 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
       new_attributes: changes.attributes,
       notes: notes || undefined,
     });
+  };
+
+  const handleDelete = async () => {
+    if (!currentUser) {
+      alert('Please select a user first');
+      return;
+    }
+
+    if (!confirm('Are you sure you want to delete this edge? This action cannot be undone.')) {
+      return;
+    }
+
+    await deleteMutation.mutateAsync({
+      video_id: videoId,
+      edge_id: selectedEdge.edge_id,
+      edge_type: selectedEdge.edge_type,
+      user_id: currentUser.id,
+      review_notes: notes || undefined,
+    });
+
+    // Remove edge from store and clear selection
+    const currentEdges = useAppStore.getState().edges;
+    setEdges(currentEdges.filter(e => e.edge_id !== selectedEdge.edge_id));
+    setSelectedEdge(null);
+    setNotes('');
   };
 
   const edgeTypeColors = {
@@ -407,6 +433,14 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
             className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white py-2 rounded font-semibold"
           >
             Modify
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={deleteMutation.isPending}
+            className="px-3 py-2 bg-red-900 hover:bg-red-800 disabled:opacity-50 text-red-200 rounded font-semibold transition-colors"
+            title="Permanently delete this edge"
+          >
+            {deleteMutation.isPending ? '...' : 'Delete'}
           </button>
         </div>
       )}

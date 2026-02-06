@@ -109,6 +109,30 @@ class AnnotationService:
             "action": "create",
         }
 
+    async def delete_edge(
+        self,
+        video_id: str,
+        edge_id: str,
+        edge_type: str,
+        user_id: int,
+        review_notes: Optional[str] = None,
+    ) -> dict:
+        """Delete an edge (records deletion in revision history)."""
+        revision = await self.tracker.record_delete(
+            video_id=video_id,
+            edge_id=edge_id,
+            edge_type=edge_type,
+            user_id=user_id,
+            review_notes=review_notes,
+        )
+
+        return {
+            "success": True,
+            "revision_id": revision.id,
+            "edge_id": edge_id,
+            "action": "delete",
+        }
+
     async def _get_created_edge_current_state(self, edge_id: str) -> Optional[EdgeResponse]:
         """Get the current state of a created edge from the database.
 
@@ -316,6 +340,12 @@ class AnnotationService:
             if rev.edge_id not in revision_map:
                 revision_map[rev.edge_id] = rev
 
+        # Get deleted edge IDs (edges whose latest revision is "delete")
+        deleted_ids = {
+            edge_id for edge_id, rev in revision_map.items()
+            if rev.action == "delete"
+        }
+
         from backend.models.schemas import TimePeriod, MotionAttributes
 
         # Update edges with revision info and apply modifications
@@ -334,9 +364,14 @@ class AnnotationService:
                     if rev.new_attributes:
                         edge.attributes = MotionAttributes(**rev.new_attributes)
 
+        # Filter out deleted edges
+        edges = [e for e in edges if e.edge_id not in deleted_ids]
+
         # Also include newly created edges from the database
         # Pass revision_map so modifications are applied to created edges
+        # (deleted created edges are already filtered by deleted_ids check)
         created_edges = await self.get_created_edges(revision_map)
+        created_edges = [e for e in created_edges if e.edge_id not in deleted_ids]
         edges.extend(created_edges)
 
         return edges

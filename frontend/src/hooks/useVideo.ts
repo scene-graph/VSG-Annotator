@@ -141,6 +141,30 @@ export function useCreateEdge() {
   });
 }
 
+export function useDeleteEdge() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: {
+      video_id: string;
+      edge_id: string;
+      edge_type: string;
+      user_id: number;
+      review_notes?: string;
+    }) => annotationsApi.delete(data),
+    onSuccess: (_, variables) => {
+      // Invalidate all edge queries for this video
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'edges' && query.queryKey[1] === variables.video_id
+      });
+      queryClient.invalidateQueries({ queryKey: ['edgeHistory', variables.video_id, variables.edge_id] });
+      queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', variables.video_id] });
+    },
+  });
+}
+
 // Scene Info and Camera Motion hooks
 export function useSceneInfo(videoId: string | undefined) {
   return useQuery({

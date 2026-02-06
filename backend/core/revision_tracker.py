@@ -151,6 +151,32 @@ class RevisionTracker:
         await self.session.flush()
         return revision
 
+    async def record_delete(
+        self,
+        video_id: str,
+        edge_id: str,
+        edge_type: str,
+        user_id: int,
+        review_notes: Optional[str] = None,
+    ) -> EdgeRevision:
+        """Record edge deletion."""
+        video = await self.get_video_by_video_id(video_id)
+        if video is None:
+            raise ValueError(f"Video not found: {video_id}")
+
+        revision = EdgeRevision(
+            video_id=video.id,
+            edge_id=edge_id,
+            edge_type=edge_type,
+            user_id=user_id,
+            action="delete",
+            review_notes=review_notes,
+        )
+
+        self.session.add(revision)
+        await self.session.flush()
+        return revision
+
     async def record_create(self, annotation: AnnotationCreate) -> EdgeRevision:
         """Record a new edge creation."""
         video = await self.get_video_by_video_id(annotation.video_id)
@@ -296,6 +322,7 @@ class RevisionTracker:
                 "rejected": 0,
                 "modified": 0,
                 "created": 0,
+                "deleted": 0,
                 "total": 0,
             }
 
@@ -306,6 +333,7 @@ class RevisionTracker:
             "rejected": len([r for r in revisions if r.action == "reject"]),
             "modified": len([r for r in revisions if r.action == "modify"]),
             "created": len([r for r in revisions if r.action == "create"]),
+            "deleted": len([r for r in revisions if r.action == "delete"]),
             "total": len(revisions),
         }
 

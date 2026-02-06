@@ -12,6 +12,7 @@ from backend.models.schemas import (
     AnnotationModify,
     AnnotationReject,
     CameraMotionModifyRequest,
+    DeleteEdgeRequest,
     MetadataRevisionResponse,
     NodeModify,
     NodeRevisionResponse,
@@ -125,6 +126,46 @@ async def create_edge(
 
     try:
         result = await service.create_edge(annotation)
+        await db.commit()
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/delete")
+async def delete_edge(
+    request: DeleteEdgeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete an edge (soft delete via revision tracking)."""
+    result = await db.execute(
+        select(Video).where(Video.video_id == request.video_id)
+    )
+    video = result.scalar_one_or_none()
+
+    if video is None:
+        raise HTTPException(
+            status_code=404, detail=f"Video not found: {request.video_id}"
+        )
+
+    # Verify user exists
+    result = await db.execute(select(User).where(User.id == request.user_id))
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        raise HTTPException(status_code=404, detail=f"User not found: {request.user_id}")
+
+    loader = VSGLoader(video.vsg_path)
+    service = AnnotationService(db, loader)
+
+    try:
+        result = await service.delete_edge(
+            video_id=request.video_id,
+            edge_id=request.edge_id,
+            edge_type=request.edge_type,
+            user_id=request.user_id,
+            review_notes=request.review_notes,
+        )
         await db.commit()
         return result
     except ValueError as e:

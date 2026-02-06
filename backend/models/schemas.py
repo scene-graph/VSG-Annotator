@@ -270,6 +270,16 @@ class AnnotationCreate(BaseModel):
     notes: Optional[str] = None
 
 
+class DeleteEdgeRequest(BaseModel):
+    """Delete an edge."""
+
+    video_id: str
+    edge_id: str
+    edge_type: Literal["static", "dynamic", "fg_bg"]
+    user_id: int
+    review_notes: Optional[str] = None
+
+
 class RevisionResponse(BaseModel):
     """Response for revision history."""
 

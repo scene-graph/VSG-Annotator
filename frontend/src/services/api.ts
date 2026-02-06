@@ -155,6 +155,19 @@ export const annotationsApi = {
     });
   },
 
+  delete: (data: {
+    video_id: string;
+    edge_id: string;
+    edge_type: string;
+    user_id: number;
+    review_notes?: string;
+  }): Promise<{ success: boolean; revision_id: number }> => {
+    return fetchJson(`${API_BASE}/annotations/delete`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
   getHistory: (videoId: string, edgeId: string): Promise<Revision[]> => {
     return fetchJson(`${API_BASE}/annotations/history/${videoId}/${edgeId}`);
   },
