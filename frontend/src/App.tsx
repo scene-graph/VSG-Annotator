@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Routes, Route, Link, useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAppStore, useFilters, useCurrentUser, useSelectedNode, useSelectedEdge, useAnnotationMode } from './store';
@@ -94,6 +94,7 @@ function VideoList() {
 
 // Annotation mode toggle component
 function AnnotationModeToggle() {
+  const [isOpen, setIsOpen] = useState(true);
   const annotationMode = useAnnotationMode();
   const setAnnotationMode = useAppStore((state) => state.setAnnotationMode);
   const selectedNode = useSelectedNode();
@@ -113,31 +114,60 @@ function AnnotationModeToggle() {
 
   return (
     <div className="bg-gray-800 rounded-lg p-3">
-      <div className="text-gray-400 text-xs uppercase mb-2">View Mode</div>
-      <div className="flex gap-2">
-        <button
-          onClick={() => handleModeChange('nodes')}
-          className={clsx(
-            'flex-1 py-2 px-3 rounded text-sm font-medium transition-colors',
-            annotationMode === 'nodes'
-              ? 'bg-green-600 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          )}
-        >
-          Nodes
-        </button>
-        <button
-          onClick={() => handleModeChange('edges')}
-          className={clsx(
-            'flex-1 py-2 px-3 rounded text-sm font-medium transition-colors',
-            annotationMode === 'edges'
-              ? 'bg-orange-600 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          )}
-        >
-          Edges
-        </button>
-      </div>
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between"
+      >
+        <div className="flex items-center gap-2">
+          <svg
+            className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+          <span className="text-gray-400 text-xs uppercase">View Mode</span>
+        </div>
+        {!isOpen && (
+          <span
+            className={clsx(
+              'px-2 py-0.5 rounded text-xs font-medium',
+              annotationMode === 'nodes'
+                ? 'bg-green-600/20 text-green-400'
+                : 'bg-orange-600/20 text-orange-400'
+            )}
+          >
+            {annotationMode === 'nodes' ? 'Nodes' : 'Edges'}
+          </span>
+        )}
+      </button>
+      {isOpen && (
+        <div className="flex gap-2 mt-2">
+          <button
+            onClick={() => handleModeChange('nodes')}
+            className={clsx(
+              'flex-1 py-2 px-3 rounded text-sm font-medium transition-colors',
+              annotationMode === 'nodes'
+                ? 'bg-green-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            )}
+          >
+            Nodes
+          </button>
+          <button
+            onClick={() => handleModeChange('edges')}
+            className={clsx(
+              'flex-1 py-2 px-3 rounded text-sm font-medium transition-colors',
+              annotationMode === 'edges'
+                ? 'bg-orange-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            )}
+          >
+            Edges
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -156,6 +186,44 @@ function VideoAnnotation() {
   const annotationMode = useAnnotationMode();
 
   const [showMetadata, setShowMetadata] = useState(false);
+
+  // Resizable right panel state
+  const [rightPanelWidth, setRightPanelWidth] = useState(384); // default w-96
+  const isResizing = useRef(false);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizing.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing.current) return;
+
+      // Calculate new width based on mouse position from right edge
+      const newWidth = window.innerWidth - e.clientX - 16; // 16px for padding
+      // Clamp between min (300) and max (600)
+      setRightPanelWidth(Math.min(600, Math.max(300, newWidth)));
+    };
+
+    const handleMouseUp = () => {
+      if (isResizing.current) {
+        isResizing.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   const { data: video, isLoading: videoLoading, error: videoError } = useVideo(videoId);
   const { data: nodesData } = useNodes(videoId);
@@ -272,8 +340,17 @@ function VideoAnnotation() {
           </div>
         </div>
 
+        {/* Resize handle */}
+        <div
+          className="w-1.5 cursor-col-resize bg-gray-700 hover:bg-blue-500 transition-colors rounded-full flex-shrink-0"
+          onMouseDown={handleResizeStart}
+        />
+
         {/* Right column: Mode Toggle + Filters + Review */}
-        <div className="w-96 flex flex-col gap-4">
+        <div
+          className="flex flex-col gap-4 flex-shrink-0"
+          style={{ width: rightPanelWidth }}
+        >
           {/* Annotation Mode Toggle */}
           <AnnotationModeToggle />
 
