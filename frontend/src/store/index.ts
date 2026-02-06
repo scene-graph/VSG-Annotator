@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Edge, EdgeFilters, Node, User, VideoDetail } from '../types';
+import type { Edge, EdgeFilters, EdgeType, Node, User, VideoDetail } from '../types';
 
 // Edge drag state for sharing between EdgeTimeline and TrackletTimeline
 export interface EdgeDragState {
@@ -11,6 +11,17 @@ export interface EdgeDragState {
 
 // Annotation mode: viewing nodes or edges
 export type AnnotationMode = 'nodes' | 'edges';
+
+// Edge creation state
+export type EdgeCreationStep = 'select-source' | 'select-target' | 'configure';
+
+export interface EdgeCreationState {
+  isCreating: boolean;
+  step: EdgeCreationStep;
+  sourceNodeIds: string[];
+  targetNodeIds: string[];
+  edgeType: EdgeType | null;
+}
 
 interface AppState {
   // Current video
@@ -67,6 +78,16 @@ interface AppState {
   // Edge drag state (for syncing EdgeTimeline drag with TrackletTimeline)
   edgeDragState: EdgeDragState | null;
   setEdgeDragState: (state: EdgeDragState | null) => void;
+
+  // Edge creation state
+  edgeCreation: EdgeCreationState;
+  startEdgeCreation: () => void;
+  cancelEdgeCreation: () => void;
+  toggleSourceNode: (nodeId: string) => void;
+  toggleTargetNode: (nodeId: string) => void;
+  proceedToTarget: () => void;
+  proceedToConfigure: () => void;
+  setEdgeCreationType: (edgeType: EdgeType | null) => void;
 }
 
 const initialFilters: EdgeFilters = {};
@@ -157,6 +178,75 @@ export const useAppStore = create<AppState>((set) => ({
   // Edge drag state
   edgeDragState: null,
   setEdgeDragState: (state) => set({ edgeDragState: state }),
+
+  // Edge creation state
+  edgeCreation: {
+    isCreating: false,
+    step: 'select-source',
+    sourceNodeIds: [],
+    targetNodeIds: [],
+    edgeType: null,
+  },
+  startEdgeCreation: () =>
+    set({
+      edgeCreation: {
+        isCreating: true,
+        step: 'select-source',
+        sourceNodeIds: [],
+        targetNodeIds: [],
+        edgeType: null,
+      },
+      selectedEdge: null,
+      selectedNode: null,
+      sourceNodes: [],
+      targetNodes: [],
+    }),
+  cancelEdgeCreation: () =>
+    set({
+      edgeCreation: {
+        isCreating: false,
+        step: 'select-source',
+        sourceNodeIds: [],
+        targetNodeIds: [],
+        edgeType: null,
+      },
+      sourceNodes: [],
+      targetNodes: [],
+    }),
+  toggleSourceNode: (nodeId) =>
+    set((state) => {
+      const currentSources = state.edgeCreation.sourceNodeIds;
+      const newSources = currentSources.includes(nodeId)
+        ? currentSources.filter((id) => id !== nodeId)
+        : [...currentSources, nodeId];
+      return {
+        edgeCreation: { ...state.edgeCreation, sourceNodeIds: newSources },
+        sourceNodes: newSources,
+      };
+    }),
+  toggleTargetNode: (nodeId) =>
+    set((state) => {
+      const currentTargets = state.edgeCreation.targetNodeIds;
+      const newTargets = currentTargets.includes(nodeId)
+        ? currentTargets.filter((id) => id !== nodeId)
+        : [...currentTargets, nodeId];
+      return {
+        edgeCreation: { ...state.edgeCreation, targetNodeIds: newTargets },
+        targetNodes: newTargets,
+      };
+    }),
+  proceedToTarget: () =>
+    set((state) => ({
+      edgeCreation: { ...state.edgeCreation, step: 'select-target' },
+    })),
+  proceedToConfigure: () =>
+    set((state) => ({
+      edgeCreation: { ...state.edgeCreation, step: 'configure' },
+    })),
+  setEdgeCreationType: (edgeType) =>
+    set((state) => ({
+      edgeCreation: { ...state.edgeCreation, edgeType },
+    })),
 }));
 
 // Selectors
@@ -172,3 +262,4 @@ export const useCurrentUser = () => useAppStore((state) => state.currentUser);
 export const useSourceNodes = () => useAppStore((state) => state.sourceNodes);
 export const useTargetNodes = () => useAppStore((state) => state.targetNodes);
 export const useEdgeDragState = () => useAppStore((state) => state.edgeDragState);
+export const useEdgeCreation = () => useAppStore((state) => state.edgeCreation);

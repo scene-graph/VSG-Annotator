@@ -1,5 +1,5 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { videosApi, edgesApi, annotationsApi } from '../services/api';
+import { useQuery, useMutation, useQueryClient, useIsMutating } from '@tanstack/react-query';
+import { videosApi, edgesApi, annotationsApi, importApi } from '../services/api';
 import type {
   AnnotationAccept,
   AnnotationReject,
@@ -79,6 +79,7 @@ export function useAcceptEdge() {
       });
       queryClient.invalidateQueries({ queryKey: ['edgeHistory', variables.video_id, variables.edge_id] });
       queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', variables.video_id] });
     },
   });
 }
@@ -96,6 +97,7 @@ export function useRejectEdge() {
       });
       queryClient.invalidateQueries({ queryKey: ['edgeHistory', variables.video_id, variables.edge_id] });
       queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', variables.video_id] });
     },
   });
 }
@@ -106,13 +108,15 @@ export function useModifyEdge() {
   return useMutation({
     mutationFn: (annotation: AnnotationModify) => annotationsApi.modify(annotation),
     onSuccess: (_, variables) => {
-      // Use predicate to match all edge queries for this video (handles different filter combinations)
-      queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === 'edges' && query.queryKey[1] === variables.video_id
-      });
+      // Don't invalidate edges query - rely on optimistic updates in components.
+      // Invalidating here causes a race condition where the refetch overwrites
+      // the locally updated edge before the optimistic update can take effect.
+      // The edges query will be refreshed when filters change or user navigates.
+
+      // Still invalidate edge history and stats
       queryClient.invalidateQueries({ queryKey: ['edgeHistory', variables.video_id, variables.edge_id] });
       queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', variables.video_id] });
     },
   });
 }
@@ -123,12 +127,16 @@ export function useCreateEdge() {
   return useMutation({
     mutationFn: (annotation: AnnotationCreate) => annotationsApi.create(annotation),
     onSuccess: (_, variables) => {
-      // Use predicate to match all edge queries for this video (handles different filter combinations)
-      queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === 'edges' && query.queryKey[1] === variables.video_id
-      });
+      // Don't invalidate edges query immediately - the edge is already
+      // optimistically added to the store by EdgeCreator. Invalidating
+      // here causes a race condition where the refetch overwrites the
+      // locally added edge before it can be used for dragging.
+      // The edges query will be refreshed when filters change or user
+      // navigates away and back.
+
+      // Only invalidate stats since that's a separate concern
       queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', variables.video_id] });
     },
   });
 }
@@ -158,6 +166,7 @@ export function useModifySceneInfo() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['sceneInfo', variables.video_id] });
       queryClient.invalidateQueries({ queryKey: ['metadataHistory', variables.video_id] });
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', variables.video_id] });
     },
   });
 }
@@ -170,6 +179,7 @@ export function useModifyCameraMotion() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['cameraMotion', variables.video_id] });
       queryClient.invalidateQueries({ queryKey: ['metadataHistory', variables.video_id] });
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', variables.video_id] });
     },
   });
 }
@@ -213,4 +223,80 @@ export function useExportSummary(videoId: string | undefined) {
     queryFn: () => import('../services/api').then(api => api.exportApi.getSummary(videoId!)),
     enabled: !!videoId,
   });
+}
+
+export function useImportVsg() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      videoId,
+      file,
+      userId,
+      clearRevisions = true,
+    }: {
+      videoId: string;
+      file: File;
+      userId: number;
+      clearRevisions?: boolean;
+    }) => importApi.importVsg(videoId, file, userId, clearRevisions),
+    onSuccess: (_, variables) => {
+      // Invalidate all video-related queries to refresh with new VSG
+      queryClient.invalidateQueries({ queryKey: ['video', variables.videoId] });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'nodes' && query.queryKey[1] === variables.videoId
+      });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'edges' && query.queryKey[1] === variables.videoId
+      });
+      queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.videoId] });
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', variables.videoId] });
+      queryClient.invalidateQueries({ queryKey: ['sceneInfo', variables.videoId] });
+      queryClient.invalidateQueries({ queryKey: ['cameraMotion', variables.videoId] });
+      queryClient.invalidateQueries({ queryKey: ['metadataHistory', variables.videoId] });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'edgeHistory' && query.queryKey[1] === variables.videoId
+      });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'nodeHistory' && query.queryKey[1] === variables.videoId
+      });
+    },
+  });
+}
+
+export function useSyncData(videoId: string) {
+  const queryClient = useQueryClient();
+  const isMutating = useIsMutating();
+
+  const sync = async () => {
+    // Wait for any pending mutations to settle
+    await queryClient.cancelQueries();
+
+    // Invalidate and refetch all video-related queries
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['video', videoId] }),
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'edges' && query.queryKey[1] === videoId
+      }),
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'nodes' && query.queryKey[1] === videoId
+      }),
+      queryClient.invalidateQueries({ queryKey: ['edgeStats', videoId] }),
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', videoId] }),
+      queryClient.invalidateQueries({ queryKey: ['sceneInfo', videoId] }),
+      queryClient.invalidateQueries({ queryKey: ['cameraMotion', videoId] }),
+      queryClient.invalidateQueries({ queryKey: ['metadataHistory', videoId] }),
+    ]);
+
+    // Wait for all refetches to complete
+    await queryClient.refetchQueries({ type: 'active' });
+  };
+
+  return { sync, isMutating: isMutating > 0 };
 }

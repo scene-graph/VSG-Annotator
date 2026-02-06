@@ -13,14 +13,22 @@ FRAME_CACHE_PATH=/path/to/cache           # optional
 **2. Install & Run**:
 ```bash
 # Backend (Terminal 1)
-python -m venv venv && source venv/bin/activate
+python -m venv venv
+source venv/bin/activate                 # Linux/macOS
+# venv\Scripts\activate                  # Windows
 pip install -e .
 python scripts/import_vsg.py
 python scripts/seed_data.py              # creates test users
 cd backend && uvicorn main:app --reload --port 8000
 
 # Frontend (Terminal 2)
-cd frontend && pnpm install && pnpm dev
+cd frontend
+
+# Using pnpm (recommended)
+pnpm install && pnpm dev
+
+# OR using npm
+npm install && npm run dev
 ```
 
 **3. Open**: http://localhost:5173
@@ -47,6 +55,12 @@ cd frontend && pnpm install && pnpm dev
 - **Node.js** 18+
 - **pnpm** (or npm/yarn)
 
+### Browser Compatibility
+
+- **Safari**: Recommended for full functionality
+- **Chrome/Edge**: Most features work, but file import may have limitations due to File System Access API restrictions
+- **Firefox**: Supported
+
 ---
 
 ## Installation
@@ -57,11 +71,19 @@ cd SGG_Visualization
 
 # Backend
 python -m venv venv
-source venv/bin/activate  # Linux/macOS (Windows: venv\Scripts\activate)
+source venv/bin/activate  # Linux/macOS
+# venv\Scripts\activate   # Windows (Command Prompt)
+# venv\Scripts\Activate.ps1  # Windows (PowerShell)
 pip install -e .          # or pip install -e ".[dev]" for development
 
 # Frontend
-cd frontend && pnpm install
+cd frontend
+
+# Using pnpm (recommended)
+pnpm install
+
+# OR using npm
+npm install
 ```
 
 ---
@@ -116,7 +138,13 @@ python scripts/seed_data.py      # Create test users (admin, annotator1, annotat
 cd backend && uvicorn main:app --reload --port 8000
 
 # 3. Start frontend (Terminal 2)
-cd frontend && pnpm dev
+cd frontend
+
+# Using pnpm
+pnpm dev
+
+# OR using npm
+npm run dev
 ```
 
 | Service | URL |
@@ -159,8 +187,12 @@ Key endpoints:
 pip install gunicorn
 gunicorn backend.main:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
 
-# Frontend build
+# Frontend build (using pnpm)
 cd frontend && pnpm build
+
+# OR using npm
+cd frontend && npm run build
+
 # Serve frontend/dist/ with nginx or any static file server
 ```
 

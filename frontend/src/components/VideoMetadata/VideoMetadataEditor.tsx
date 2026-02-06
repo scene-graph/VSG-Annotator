@@ -45,52 +45,6 @@ function Select({
   );
 }
 
-// Multi-select component
-function MultiSelect({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: string[];
-  onChange: (value: string[]) => void;
-  options: string[];
-}) {
-  const toggleOption = (opt: string) => {
-    if (value.includes(opt)) {
-      // Remove if already selected (but keep at least one)
-      if (value.length > 1) {
-        onChange(value.filter((v) => v !== opt));
-      }
-    } else {
-      // Add if not selected
-      onChange([...value, opt]);
-    }
-  };
-
-  return (
-    <div>
-      <label className="text-gray-400 text-xs uppercase block mb-1">{label}</label>
-      <div className="flex flex-wrap gap-1 bg-gray-700 rounded p-2 min-h-[40px]">
-        {options.map((opt) => (
-          <button
-            key={opt}
-            type="button"
-            onClick={() => toggleOption(opt)}
-            className={`px-2 py-1 rounded text-xs transition-colors ${
-              value.includes(opt)
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-            }`}
-          >
-            {opt}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 // Options for scene info
 const MOTION_TYPE_OPTIONS = ['dolly', 'pedestal', 'truck', 'pan', 'tilt', 'roll', 'zoom', 'static'];
@@ -144,62 +98,174 @@ function SceneInfoEditor({
   onSave: (info: SceneInfo) => void;
   onCancel: () => void;
 }) {
-  const [category, setCategory] = useState<string[]>(
-    sceneInfo?.category || ['unknown']
-  );
-  const [transitionTypes, setTransitionTypes] = useState<string[]>(
-    sceneInfo?.transition_types || ['unknown']
-  );
-  const [sceneChangeRelations, setSceneChangeRelations] = useState<string[]>(
-    sceneInfo?.scene_change_relations || ['unknown']
-  );
-  const [confidence, setConfidence] = useState(sceneInfo?.confidence || 0.5);
+  // Build scenes array from sceneInfo categories
+  const [scenes, setScenes] = useState<string[]>(() => {
+    const cats = sceneInfo?.category || ['unknown'];
+    return cats;
+  });
+
+  // Transitions and relations: N scenes requires N-1 of each
+  const [transitions, setTransitions] = useState<string[]>(() => {
+    const trans = sceneInfo?.transition_types || [];
+    // Ensure we have exactly N-1 transitions
+    const needed = Math.max(0, (sceneInfo?.category?.length || 1) - 1);
+    if (trans.length < needed) {
+      return [...trans, ...Array(needed - trans.length).fill('cut')];
+    }
+    return trans.slice(0, needed);
+  });
+
+  const [relations, setRelations] = useState<string[]>(() => {
+    const rels = sceneInfo?.scene_change_relations || [];
+    // Ensure we have exactly N-1 relations
+    const needed = Math.max(0, (sceneInfo?.category?.length || 1) - 1);
+    if (rels.length < needed) {
+      return [...rels, ...Array(needed - rels.length).fill('unknown')];
+    }
+    return rels.slice(0, needed);
+  });
+
+  // Confidence is read-only (model metric)
+  const confidence = sceneInfo?.confidence || 0.5;
+
+  const addScene = () => {
+    setScenes([...scenes, 'unknown']);
+    setTransitions([...transitions, 'cut']);
+    setRelations([...relations, 'unknown']);
+  };
+
+  const removeScene = (index: number) => {
+    if (scenes.length <= 1) return;
+
+    const newScenes = scenes.filter((_, i) => i !== index);
+
+    // Remove the transition/relation associated with this scene
+    // If removing first scene, remove transition[0] (transition TO scene 1)
+    // If removing last scene, remove transition[N-2] (transition FROM scene N-1)
+    // If removing middle scene at index i, remove transition[i-1] (transition TO this scene)
+    let transIdx: number;
+    if (index === 0) {
+      transIdx = 0; // Remove first transition
+    } else {
+      transIdx = index - 1; // Remove transition leading TO this scene
+    }
+
+    const newTransitions = transitions.filter((_, i) => i !== transIdx);
+    const newRelations = relations.filter((_, i) => i !== transIdx);
+
+    setScenes(newScenes);
+    setTransitions(newTransitions);
+    setRelations(newRelations);
+  };
+
+  const updateScene = (index: number, value: string) => {
+    const newScenes = [...scenes];
+    newScenes[index] = value;
+    setScenes(newScenes);
+  };
+
+  const updateTransition = (index: number, value: string) => {
+    const newTransitions = [...transitions];
+    newTransitions[index] = value;
+    setTransitions(newTransitions);
+  };
+
+  const updateRelation = (index: number, value: string) => {
+    const newRelations = [...relations];
+    newRelations[index] = value;
+    setRelations(newRelations);
+  };
 
   const handleSave = () => {
     onSave({
-      category,
-      transition_types: transitionTypes,
-      scene_change_relations: sceneChangeRelations,
+      category: scenes,
+      transition_types: transitions,
+      scene_change_relations: relations,
       confidence,
     });
   };
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <MultiSelect
-          label="Category"
-          value={category}
-          onChange={setCategory}
-          options={SCENE_CATEGORY_OPTIONS}
-        />
-        <div>
-          <label className="text-gray-400 text-xs uppercase block mb-1">Confidence</label>
-          <input
-            type="number"
-            value={confidence}
-            onChange={(e) => setConfidence(Number(e.target.value))}
-            min={0}
-            max={1}
-            step={0.1}
-            className="w-full bg-gray-700 text-white rounded p-2 text-sm"
-          />
+    <div className="space-y-3">
+      {scenes.map((scene, idx) => (
+        <div key={idx}>
+          {/* Scene row */}
+          <div className="flex items-center gap-2">
+            <span className="text-gray-400 text-xs w-16 flex-shrink-0">Scene {idx + 1}</span>
+            <select
+              value={scene}
+              onChange={(e) => updateScene(idx, e.target.value)}
+              className="flex-1 bg-gray-700 text-white rounded p-2 text-sm"
+            >
+              {SCENE_CATEGORY_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
+            {scenes.length > 1 && (
+              <button
+                onClick={() => removeScene(idx)}
+                className="text-red-400 hover:text-red-300 px-2 py-1 text-lg font-bold"
+                title="Remove scene"
+              >
+                -
+              </button>
+            )}
+          </div>
+
+          {/* Transition row (after scene, before next scene) */}
+          {idx < scenes.length - 1 && (
+            <div className="ml-6 pl-4 border-l border-gray-600 my-2 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500 text-xs w-4">↓</span>
+                <span className="text-gray-400 text-xs w-16">Transition</span>
+                <select
+                  value={transitions[idx] || 'cut'}
+                  onChange={(e) => updateTransition(idx, e.target.value)}
+                  className="flex-1 bg-gray-700 text-white rounded p-1.5 text-sm"
+                >
+                  {TRANSITION_TYPES_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500 text-xs w-4">↓</span>
+                <span className="text-gray-400 text-xs w-16">Relation</span>
+                <select
+                  value={relations[idx] || 'unknown'}
+                  onChange={(e) => updateRelation(idx, e.target.value)}
+                  className="flex-1 bg-gray-700 text-white rounded p-1.5 text-sm"
+                >
+                  {SCENE_CHANGE_RELATIONS_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+
+      <button
+        onClick={addScene}
+        className="text-blue-400 hover:text-blue-300 text-sm py-1"
+      >
+        + Add Scene
+      </button>
+
+      {/* Confidence at bottom - read-only */}
+      <div className="border-t border-gray-700 pt-4 mt-4">
+        <div className="flex items-center justify-between">
+          <span className="text-gray-400 text-xs uppercase">Confidence (Model Metric)</span>
+          <span className="text-gray-400 text-sm">{(confidence * 100).toFixed(0)}%</span>
         </div>
       </div>
-
-      <MultiSelect
-        label="Transition Types"
-        value={transitionTypes}
-        onChange={setTransitionTypes}
-        options={TRANSITION_TYPES_OPTIONS}
-      />
-
-      <MultiSelect
-        label="Scene Change Relations"
-        value={sceneChangeRelations}
-        onChange={setSceneChangeRelations}
-        options={SCENE_CHANGE_RELATIONS_OPTIONS}
-      />
 
       <div className="flex gap-2 pt-2">
         <button

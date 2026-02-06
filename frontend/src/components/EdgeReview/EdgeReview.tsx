@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import type { Edge, MotionAttributes, TimePeriod } from '../../types';
-import { useAppStore, useCurrentUser, useSelectedEdge, useNodes } from '../../store';
+import { useAppStore, useCurrentUser, useSelectedEdge, useNodes, useEdgeCreation } from '../../store';
 import { useAcceptEdge, useRejectEdge, useModifyEdge, useEdgeHistory } from '../../hooks';
 import { EdgeEditor } from './EdgeEditor';
+import { EdgeCreator } from './EdgeCreator';
 import { ValidationReasoning } from './ValidationReasoning';
 import { RevisionHistory } from './RevisionHistory';
 import clsx from 'clsx';
@@ -21,6 +22,11 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
   const nodes = useNodes();
   const setSelectedNode = useAppStore((state) => state.setSelectedNode);
 
+  // Edge creation state
+  const edgeCreation = useEdgeCreation();
+  const startEdgeCreation = useAppStore((state) => state.startEdgeCreation);
+  const cancelEdgeCreation = useAppStore((state) => state.cancelEdgeCreation);
+
   const [isEditing, setIsEditing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [notes, setNotes] = useState('');
@@ -34,10 +40,28 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     selectedEdge?.edge_id
   );
 
+  // Show EdgeCreator when in creation mode
+  if (edgeCreation.isCreating) {
+    return (
+      <div className="bg-gray-800 rounded-lg p-4 h-full overflow-y-auto">
+        <EdgeCreator videoId={videoId} onSuccess={cancelEdgeCreation} />
+      </div>
+    );
+  }
+
   if (!selectedEdge) {
     return (
-      <div className="bg-gray-800 rounded-lg p-4 h-full flex items-center justify-center">
+      <div className="bg-gray-800 rounded-lg p-4 h-full flex flex-col items-center justify-center gap-4">
         <p className="text-gray-400">Select an edge to review</p>
+        <button
+          onClick={startEdgeCreation}
+          className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          Create New Edge
+        </button>
       </div>
     );
   }
@@ -122,7 +146,7 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     setNotes('');
   };
 
-  const handleModify = async (changes: {
+  const handleModify = (changes: {
     predicate?: string;
     time_period?: TimePeriod;
     attributes?: MotionAttributes;
@@ -132,7 +156,28 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
       return;
     }
 
-    await modifyMutation.mutateAsync({
+    // Build the updated edge FIRST
+    const updatedEdge: Edge = {
+      ...selectedEdge,
+      predicate: changes.predicate ?? selectedEdge.predicate,
+      time_period: changes.time_period ?? selectedEdge.time_period,
+      attributes: changes.attributes ?? selectedEdge.attributes,
+      has_revision: true,
+      revision_action: 'modify',
+    };
+
+    // Update store immediately (optimistic update)
+    setSelectedEdge(updatedEdge);
+    const currentEdges = useAppStore.getState().edges;
+    const updatedEdges = currentEdges.map(e =>
+      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
+    );
+    setEdges(updatedEdges);
+    setIsEditing(false);
+    setNotes('');
+
+    // Send API call in background (non-blocking)
+    modifyMutation.mutate({
       video_id: videoId,
       edge_id: selectedEdge.edge_id,
       edge_type: selectedEdge.edge_type,
@@ -142,27 +187,6 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
       new_attributes: changes.attributes,
       notes: notes || undefined,
     });
-
-    // Update the selected edge in store with the new values so UI reflects changes immediately
-    const updatedEdge: Edge = {
-      ...selectedEdge,
-      predicate: changes.predicate ?? selectedEdge.predicate,
-      time_period: changes.time_period ?? selectedEdge.time_period,
-      attributes: changes.attributes ?? selectedEdge.attributes,
-      has_revision: true,
-      revision_action: 'modify',
-    };
-    setSelectedEdge(updatedEdge);
-
-    // Also update the edges array so EdgeTimeline reflects changes immediately
-    const currentEdges = useAppStore.getState().edges;
-    const updatedEdges = currentEdges.map(e =>
-      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
-    );
-    setEdges(updatedEdges);
-
-    setIsEditing(false);
-    setNotes('');
   };
 
   const edgeTypeColors = {

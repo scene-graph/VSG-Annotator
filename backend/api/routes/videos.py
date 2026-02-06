@@ -116,8 +116,20 @@ async def list_videos(
 
     summaries = []
     for video in videos:
-        # Load VSG to get counts
-        loader = VSGLoader(video.vsg_path)
+        # Load VSG to get counts - handle missing/corrupt files gracefully
+        node_count = 0
+        edge_count = 0
+        try:
+            loader = VSGLoader(video.vsg_path)
+            node_count = len(loader.get_static_nodes()) + len(loader.get_dynamic_nodes())
+            edge_count = (
+                len(loader.get_static_edges())
+                + len(loader.get_dynamic_edges())
+                + len(loader.get_fg_bg_edges())
+            )
+        except Exception:
+            # VSG file missing or corrupt - use default counts
+            pass
 
         summaries.append(
             VideoSummary(
@@ -133,12 +145,8 @@ async def list_videos(
                 }
                 if video.resolution_width
                 else None,
-                node_count=len(loader.get_static_nodes()) + len(loader.get_dynamic_nodes()),
-                edge_count=(
-                    len(loader.get_static_edges())
-                    + len(loader.get_dynamic_edges())
-                    + len(loader.get_fg_bg_edges())
-                ),
+                node_count=node_count,
+                edge_count=edge_count,
             )
         )
 
@@ -154,9 +162,19 @@ async def get_video(video_id: str, db: AsyncSession = Depends(get_db)):
     if video is None:
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
-    # Load VSG
-    loader = VSGLoader(video.vsg_path)
-    summary = loader.get_summary()
+    # Load VSG - handle missing/corrupt files gracefully
+    try:
+        loader = VSGLoader(video.vsg_path)
+        summary = loader.get_summary()
+    except Exception:
+        # VSG file missing or corrupt - use default counts
+        summary = {
+            "static_node_count": 0,
+            "dynamic_node_count": 0,
+            "static_edge_count": 0,
+            "dynamic_edge_count": 0,
+            "fg_bg_edge_count": 0,
+        }
 
     return VideoDetail(
         id=video.id,
@@ -277,8 +295,12 @@ async def get_nodes(
     if video is None:
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
-    loader = VSGLoader(video.vsg_path)
-    nodes = list(loader.get_all_nodes().values())
+    try:
+        loader = VSGLoader(video.vsg_path)
+        nodes = list(loader.get_all_nodes().values())
+    except Exception:
+        # VSG file missing or corrupt - return empty list
+        return []
 
     # Filter by static/dynamic
     if is_static is not None:
@@ -305,8 +327,12 @@ async def get_node(
     if video is None:
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
-    loader = VSGLoader(video.vsg_path)
-    node = loader.get_node_by_id(node_id)
+    try:
+        loader = VSGLoader(video.vsg_path)
+        node = loader.get_node_by_id(node_id)
+    except Exception:
+        # VSG file missing or corrupt
+        raise HTTPException(status_code=404, detail=f"VSG file unavailable for video: {video_id}")
 
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
@@ -326,8 +352,12 @@ async def get_metadata(
     if video is None:
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
-    loader = VSGLoader(video.vsg_path)
-    return loader.metadata
+    try:
+        loader = VSGLoader(video.vsg_path)
+        return loader.metadata
+    except Exception:
+        # VSG file missing or corrupt - return None
+        return None
 
 
 @router.get("/{video_id}/scene-info")
@@ -356,8 +386,12 @@ async def get_scene_info(
         return revision.new_value  # Return human-revised data (already normalized)
 
     # Fall back to original VSG data with normalization
-    loader = VSGLoader(video.vsg_path)
-    return normalize_scene_info(loader.scene_info)
+    try:
+        loader = VSGLoader(video.vsg_path)
+        return normalize_scene_info(loader.scene_info)
+    except Exception:
+        # VSG file missing or corrupt - return None
+        return None
 
 
 @router.get("/{video_id}/camera-motion")
@@ -386,8 +420,12 @@ async def get_camera_motion(
         return revision.new_value  # Return human-revised data (already normalized)
 
     # Fall back to original VSG data with normalization
-    loader = VSGLoader(video.vsg_path)
-    return normalize_camera_motion(loader.camera_motion)
+    try:
+        loader = VSGLoader(video.vsg_path)
+        return normalize_camera_motion(loader.camera_motion)
+    except Exception:
+        # VSG file missing or corrupt - return None
+        return None
 
 
 @router.get("/cache/status")

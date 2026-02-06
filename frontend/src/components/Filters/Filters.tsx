@@ -9,7 +9,7 @@ interface FiltersProps {
 }
 
 export function Filters({ videoId }: FiltersProps) {
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(false);
   const filters = useFilters();
   const updateFilter = useAppStore((state) => state.updateFilter);
   const clearFilters = useAppStore((state) => state.clearFilters);

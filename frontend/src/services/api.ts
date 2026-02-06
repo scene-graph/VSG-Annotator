@@ -221,6 +221,45 @@ export const exportApi = {
   },
 };
 
+// Import API
+export const importApi = {
+  importVsg: async (
+    videoId: string,
+    file: File,
+    userId: number,
+    clearRevisions: boolean = true
+  ): Promise<{
+    success: boolean;
+    video_id: string;
+    message: string;
+    revisions_cleared: number;
+    new_vsg_path: string;
+    imported_at: string;
+  }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const params = new URLSearchParams();
+    params.set('user_id', String(userId));
+    params.set('clear_revisions', String(clearRevisions));
+
+    const response = await fetch(
+      `${API_BASE}/import/${videoId}?${params.toString()}`,
+      {
+        method: 'POST',
+        body: formData,
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+
+    return response.json();
+  },
+};
+
 // Users API
 export const usersApi = {
   list: (): Promise<User[]> => {

@@ -9,6 +9,7 @@ from backend.api.routes import (
     annotations_router,
     edges_router,
     export_router,
+    import_router,
     users_router,
     videos_router,
 )
@@ -46,6 +47,7 @@ app.include_router(videos_router, prefix=settings.api_prefix)
 app.include_router(edges_router, prefix=settings.api_prefix)
 app.include_router(annotations_router, prefix=settings.api_prefix)
 app.include_router(export_router, prefix=settings.api_prefix)
+app.include_router(import_router, prefix=settings.api_prefix)
 app.include_router(users_router, prefix=settings.api_prefix)
 
 

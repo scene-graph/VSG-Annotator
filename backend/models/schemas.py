@@ -331,6 +331,17 @@ class ExportResponse(BaseModel):
     revision_summary: dict[str, int]
 
 
+class ImportResponse(BaseModel):
+    """Import response for VSG upload."""
+
+    success: bool
+    video_id: str
+    message: str
+    revisions_cleared: int
+    new_vsg_path: str
+    imported_at: datetime
+
+
 # ============================================================================
 # Scene Info Schemas
 # ============================================================================

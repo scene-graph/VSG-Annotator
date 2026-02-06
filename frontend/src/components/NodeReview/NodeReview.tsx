@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Node, Edge, NodeVisualAttributes, NodePhysicalAttributes } from '../../types';
-import { useAppStore, useSelectedNode, useEdges, useCurrentUser, useCurrentVideo, useNodes } from '../../store';
+import { useAppStore, useSelectedNode, useEdges, useCurrentUser, useNodes } from '../../store';
 import { useModifyNode } from '../../hooks/useVideo';
 import { NodeEditor } from './NodeEditor';
 import clsx from 'clsx';
@@ -37,7 +37,6 @@ export function NodeReview({ videoId }: NodeReviewProps) {
   const nodes = useNodes();
   const setNodes = useAppStore((state) => state.setNodes);
   const currentUser = useCurrentUser();
-  const currentVideo = useCurrentVideo();
 
   const [isEditing, setIsEditing] = useState(false);
   const modifyMutation = useModifyNode();
@@ -58,11 +57,11 @@ export function NodeReview({ videoId }: NodeReviewProps) {
     visual?: NodeVisualAttributes;
     physical?: NodePhysicalAttributes;
   }) => {
-    if (!currentUser || !currentVideo || !selectedNode) return;
+    if (!currentUser || !selectedNode) return;
 
     try {
       await modifyMutation.mutateAsync({
-        video_id: currentVideo.video_id,
+        video_id: videoId,
         node_id: selectedNode.node_id,
         user_id: currentUser.id,
         new_visual_attributes: changes.visual,

@@ -57,26 +57,46 @@ function SceneInfoSection({ sceneInfo }: { sceneInfo: SceneInfo | null }) {
     );
   }
 
+  const categories = sceneInfo.category || [];
+  const transitions = sceneInfo.transition_types || [];
+  const relations = sceneInfo.scene_change_relations || [];
+
   return (
-    <div className="space-y-1">
-      <MetadataRow label="Category">
-        {sceneInfo.category?.map((cat, idx) => (
-          <Badge key={idx} variant="cyan">{cat}</Badge>
-        ))}
-      </MetadataRow>
-      <MetadataRow label="Confidence">
-        <span className="text-white text-sm">{(sceneInfo.confidence * 100).toFixed(0)}%</span>
-      </MetadataRow>
-      <MetadataRow label="Transitions">
-        {sceneInfo.transition_types?.map((t, idx) => (
-          <Badge key={idx} variant="purple">{t}</Badge>
-        ))}
-      </MetadataRow>
-      <MetadataRow label="Scene Changes">
-        {sceneInfo.scene_change_relations?.map((r, idx) => (
-          <Badge key={idx} variant="blue">{r}</Badge>
-        ))}
-      </MetadataRow>
+    <div className="space-y-2">
+      {categories.map((cat, idx) => (
+        <div key={idx}>
+          {/* Scene badge */}
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500 text-xs w-14">Scene {idx + 1}</span>
+            <Badge variant="cyan">{cat}</Badge>
+          </div>
+
+          {/* Transition info (if not last scene) */}
+          {idx < categories.length - 1 && (
+            <div className="ml-4 text-gray-500 text-xs flex items-center gap-1 py-1">
+              <span>↓</span>
+              {transitions[idx] && (
+                <Badge variant="purple">{transitions[idx]}</Badge>
+              )}
+              {relations[idx] && (
+                <>
+                  <span className="text-gray-600">·</span>
+                  <Badge variant="blue">{relations[idx]}</Badge>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+
+      {/* Confidence at bottom */}
+      <div className="pt-2 border-t border-gray-700 mt-2">
+        <MetadataRow label="Confidence">
+          <span className="text-gray-400 text-sm">
+            {sceneInfo.confidence != null ? `${(sceneInfo.confidence * 100).toFixed(0)}%` : 'N/A'}
+          </span>
+        </MetadataRow>
+      </div>
     </div>
   );
 }
@@ -114,7 +134,9 @@ function CameraMotionSection({ cameraMotion }: { cameraMotion: CameraMotion | nu
       )}
       <div className="pt-2 border-t border-gray-700 mt-2">
         <MetadataRow label="Confidence">
-          <span className="text-gray-400 text-sm">{(cameraMotion.confidence * 100).toFixed(0)}%</span>
+          <span className="text-gray-400 text-sm">
+            {cameraMotion.confidence != null ? `${(cameraMotion.confidence * 100).toFixed(0)}%` : 'N/A'}
+          </span>
         </MetadataRow>
       </div>
     </div>

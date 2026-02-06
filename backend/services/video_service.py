@@ -6,7 +6,12 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from PIL import Image
+
 from backend.config import settings
+
+# JPEG quality for cached frames (85 is good quality/size balance)
+JPEG_QUALITY = 85
 
 logger = logging.getLogger(__name__)
 
@@ -140,12 +145,12 @@ class DiskFrameCache:
         """Get a cached frame if it exists."""
         cache_dir = self.get_video_cache_path(video_id)
 
-        # Check common patterns
+        # Check JPG first (preferred), then PNG
         patterns = [
+            f"{frame_idx:04d}.jpg",  # JPG first (smaller, faster)
             f"{frame_idx:04d}.png",
-            f"{frame_idx:04d}.jpg",
-            f"frame_{frame_idx:04d}.png",
             f"frame_{frame_idx:04d}.jpg",
+            f"frame_{frame_idx:04d}.png",
         ]
 
         for pattern in patterns:
@@ -156,13 +161,18 @@ class DiskFrameCache:
         return None
 
     def cache_frame(self, video_id: str, source_path: Path) -> Path:
-        """Cache a single frame."""
+        """Cache a single frame, converting PNG to JPG for faster loading."""
         cache_dir = self.get_video_cache_path(video_id)
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        dest_path = cache_dir / source_path.name
+        # Always save as JPG for faster loading
+        dest_path = cache_dir / f"{source_path.stem}.jpg"
         if not dest_path.exists():
-            shutil.copy2(source_path, dest_path)
+            with Image.open(source_path) as img:
+                # Convert RGBA/P modes to RGB for JPEG
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                img.save(dest_path, 'JPEG', quality=JPEG_QUALITY, optimize=True)
 
         return dest_path
 
@@ -179,17 +189,12 @@ class DiskFrameCache:
                     logger.warning(f"Frames path does not exist: {frames_path}")
                     return
 
-                cache_dir = self.get_video_cache_path(video_id)
-                cache_dir.mkdir(parents=True, exist_ok=True)
-
-                # Copy all frame files
+                # Convert and cache all frames
                 frame_count = 0
                 for ext in [".png", ".jpg", ".jpeg"]:
-                    for src_file in source_dir.glob(f"*{ext}"):
-                        dest_file = cache_dir / src_file.name
-                        if not dest_file.exists():
-                            shutil.copy2(src_file, dest_file)
-                            frame_count += 1
+                    for src_file in sorted(source_dir.glob(f"*{ext}")):
+                        self.cache_frame(video_id, src_file)
+                        frame_count += 1
 
                 logger.info(f"Cached {frame_count} frames for {video_id}")
             except Exception as e:
@@ -204,6 +209,26 @@ class DiskFrameCache:
                 self._warming_threads[video_id] = thread
                 thread.start()
                 logger.info(f"Started cache warming for {video_id}")
+
+    def warm_cache_sync(self, video_id: str, frames_path: str) -> int:
+        """Synchronously cache all frames (for CLI use).
+
+        Returns the number of frames cached.
+        """
+        source_dir = Path(frames_path)
+        if not source_dir.exists():
+            return 0
+
+        frame_count = 0
+        for ext in [".png", ".jpg", ".jpeg"]:
+            for src_file in sorted(source_dir.glob(f"*{ext}")):
+                self.cache_frame(video_id, src_file)
+                frame_count += 1
+                if frame_count % 20 == 0:
+                    print(f"  {frame_count} frames cached...")
+
+        print(f"  Total: {frame_count} frames")
+        return frame_count
 
     def clear_video(self, video_id: str) -> bool:
         """Clear cache for a specific video."""

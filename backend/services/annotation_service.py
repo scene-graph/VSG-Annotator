@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.revision_tracker import RevisionTracker
@@ -65,10 +66,13 @@ class AnnotationService:
 
     async def modify_edge(self, annotation: AnnotationModify) -> dict:
         """Modify an existing edge."""
-        # Get the original edge
+        # Get the original edge - first try VSG, then database (for created edges)
         edge = self.vsg_loader.get_edge_by_id(annotation.edge_id)
         if edge is None:
-            raise ValueError(f"Edge not found: {annotation.edge_id}")
+            # Edge not in VSG - might be a created edge, look in database
+            edge = await self._get_created_edge_current_state(annotation.edge_id)
+            if edge is None:
+                raise ValueError(f"Edge not found: {annotation.edge_id}")
 
         # Record the modification
         revision = await self.tracker.record_modify(annotation, edge)
@@ -104,6 +108,123 @@ class AnnotationService:
             "edge_id": revision.edge_id,
             "action": "create",
         }
+
+    async def _get_created_edge_current_state(self, edge_id: str) -> Optional[EdgeResponse]:
+        """Get the current state of a created edge from the database.
+
+        For created edges (not in VSG), this builds an EdgeResponse from
+        the latest revision data.
+        """
+        import json
+        from backend.models.schemas import MotionAttributes, TimePeriod
+
+        # Get the latest revision for this edge
+        latest = await self.tracker.get_latest_revision(self._video_id, edge_id)
+        if latest is None:
+            return None
+
+        # Only handle create/modify actions (not accept/reject which are for VSG edges)
+        if latest.action not in ("create", "modify"):
+            return None
+
+        # For "create" revision, the new_* fields are the initial state
+        # For "modify" revision, the new_* fields are the current state (or None if unchanged)
+        # We need to trace back to get the full current state
+
+        # Get the original create revision to get base values
+        all_revisions = await self.tracker.get_edge_history(self._video_id, edge_id)
+        if not all_revisions:
+            return None
+
+        # Find the create revision (oldest one with action=create)
+        from backend.models.database import EdgeRevision, Video
+
+        create_rev = None
+        for rev in reversed(all_revisions):  # oldest first
+            if rev.action == "create":
+                # Need to get the actual EdgeRevision object, not RevisionResponse
+                video_result = await self.session.execute(
+                    select(Video).where(Video.video_id == self._video_id)
+                )
+                video = video_result.scalar_one_or_none()
+                if video:
+                    result = await self.session.execute(
+                        select(EdgeRevision).where(EdgeRevision.id == rev.id)
+                    )
+                    create_rev = result.scalar_one_or_none()
+                break
+
+        if create_rev is None:
+            return None
+
+        # Start with create revision values
+        source = json.loads(create_rev.new_source) if create_rev.new_source else []
+        target = json.loads(create_rev.new_target) if create_rev.new_target else []
+        predicate = create_rev.new_predicate or ""
+        time_period_dict = create_rev.new_time_period or {"start_frame": 0, "end_frame": 0}
+        attributes_dict = create_rev.new_attributes
+
+        # Apply any subsequent modifications
+        if latest.action == "modify" and latest.id != create_rev.id:
+            # Get the latest revision object
+            result = await self.session.execute(
+                select(EdgeRevision).where(EdgeRevision.id == latest.id)
+            )
+            modify_rev = result.scalar_one_or_none()
+            if modify_rev:
+                if modify_rev.new_predicate:
+                    predicate = modify_rev.new_predicate
+                if modify_rev.new_time_period:
+                    time_period_dict = modify_rev.new_time_period
+                if modify_rev.new_attributes:
+                    attributes_dict = modify_rev.new_attributes
+                if modify_rev.new_source:
+                    source = json.loads(modify_rev.new_source)
+                if modify_rev.new_target:
+                    target = json.loads(modify_rev.new_target)
+
+        # Build and return EdgeResponse
+        time_period = TimePeriod(**time_period_dict)
+        attributes = MotionAttributes(**attributes_dict) if attributes_dict else None
+
+        # Get node categories for source/target
+        all_nodes = self.vsg_loader.get_all_nodes()
+        source_list = source if isinstance(source, list) else [source]
+        target_list = target if isinstance(target, list) else [target]
+
+        source_category = [
+            all_nodes[nid].category if nid in all_nodes else "unknown"
+            for nid in source_list
+        ]
+        target_category = [
+            all_nodes[nid].category if nid in all_nodes else "unknown"
+            for nid in target_list
+        ]
+
+        if create_rev.edge_type in ("static", "dynamic"):
+            source_category = source_category[0] if len(source_category) == 1 else source_category
+            target_category = target_category[0] if len(target_category) == 1 else target_category
+
+        return EdgeResponse(
+            edge_id=edge_id,
+            edge_type=create_rev.edge_type,
+            source=source,
+            target=target,
+            source_category=source_category,
+            target_category=target_category,
+            predicate=predicate,
+            confidence=1.0,
+            confidence_round1=1.0,
+            confidence_round2=1.0,
+            validated=True,
+            extraction_round=2,
+            validation_reasoning_round1="Human annotated",
+            validation_reasoning_round2="",
+            time_period=time_period,
+            attributes=attributes,
+            has_revision=True,
+            revision_action=latest.action,
+        )
 
     async def modify_node(self, modification: NodeModify) -> dict:
         """Modify a node's attributes."""
@@ -214,14 +335,21 @@ class AnnotationService:
                         edge.attributes = MotionAttributes(**rev.new_attributes)
 
         # Also include newly created edges from the database
-        created_edges = await self.get_created_edges()
+        # Pass revision_map so modifications are applied to created edges
+        created_edges = await self.get_created_edges(revision_map)
         edges.extend(created_edges)
 
         return edges
 
-    async def get_created_edges(self) -> list[EdgeResponse]:
-        """Get all newly created edges as EdgeResponse objects."""
+    async def get_created_edges(self, revision_map: dict = None) -> list[EdgeResponse]:
+        """Get all newly created edges as EdgeResponse objects.
+
+        Args:
+            revision_map: Optional map of edge_id -> latest revision. If provided,
+                         modifications will be applied to created edges.
+        """
         import json
+        from backend.models.schemas import MotionAttributes, TimePeriod
 
         created_revisions = await self.tracker.get_created_edges(self._video_id)
 
@@ -233,6 +361,27 @@ class AnnotationService:
             # Build EdgeResponse from revision data
             source = json.loads(rev.new_source) if rev.new_source else []
             target = json.loads(rev.new_target) if rev.new_target else []
+            predicate = rev.new_predicate or ""
+            time_period_dict = rev.new_time_period or {"start_frame": 0, "end_frame": 0}
+            attributes_dict = rev.new_attributes
+            revision_action = "create"
+
+            # Check if there's a later modification for this edge
+            if revision_map and rev.edge_id in revision_map:
+                latest_rev = revision_map[rev.edge_id]
+                if latest_rev.action == "modify":
+                    revision_action = "modify"
+                    # Apply modifications
+                    if latest_rev.new_predicate:
+                        predicate = latest_rev.new_predicate
+                    if latest_rev.new_time_period:
+                        time_period_dict = latest_rev.new_time_period
+                    if latest_rev.new_attributes:
+                        attributes_dict = latest_rev.new_attributes
+                    if latest_rev.new_source:
+                        source = json.loads(latest_rev.new_source)
+                    if latest_rev.new_target:
+                        target = json.loads(latest_rev.new_target)
 
             # Look up categories from node data
             source_list = source if isinstance(source, list) else [source]
@@ -252,13 +401,11 @@ class AnnotationService:
                 source_category = source_category[0] if len(source_category) == 1 else source_category
                 target_category = target_category[0] if len(target_category) == 1 else target_category
 
-            from backend.models.schemas import MotionAttributes, TimePeriod
-
-            time_period = TimePeriod(**rev.new_time_period) if rev.new_time_period else TimePeriod(start_frame=0, end_frame=0)
+            time_period = TimePeriod(**time_period_dict)
 
             attributes = None
-            if rev.edge_type == "dynamic" and rev.new_attributes:
-                attributes = MotionAttributes(**rev.new_attributes)
+            if rev.edge_type == "dynamic" and attributes_dict:
+                attributes = MotionAttributes(**attributes_dict)
 
             edges.append(
                 EdgeResponse(
@@ -268,7 +415,7 @@ class AnnotationService:
                     target=target,
                     source_category=source_category,
                     target_category=target_category,
-                    predicate=rev.new_predicate or "",
+                    predicate=predicate,
                     confidence=1.0,
                     confidence_round1=1.0,
                     confidence_round2=1.0,
@@ -279,7 +426,7 @@ class AnnotationService:
                     time_period=time_period,
                     attributes=attributes,
                     has_revision=True,
-                    revision_action="create",
+                    revision_action=revision_action,
                 )
             )
 
