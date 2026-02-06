@@ -12,6 +12,8 @@ import { NodeReview } from './components/NodeReview';
 import { Filters } from './components/Filters';
 import { VideoMetadataPanel } from './components/VideoMetadata';
 import { ExportButton } from './components/Export';
+import { ImportButton } from './components/Import';
+import { SaveButton } from './components/Save';
 import clsx from 'clsx';
 
 function VideoList() {
@@ -153,7 +155,7 @@ function VideoAnnotation() {
   const selectedEdge = useSelectedEdge();
   const annotationMode = useAnnotationMode();
 
-  const [showMetadata, setShowMetadata] = useState(true);
+  const [showMetadata, setShowMetadata] = useState(false);
 
   const { data: video, isLoading: videoLoading, error: videoError } = useVideo(videoId);
   const { data: nodesData } = useNodes(videoId);
@@ -169,7 +171,19 @@ function VideoAnnotation() {
   }, [nodesData, setNodes]);
 
   useEffect(() => {
-    if (edgesData) setEdges(edgesData);
+    if (edgesData) {
+      // Merge server edges with local edges, preferring local for created edges
+      // This prevents duplicates when server returns created edges that we already have locally
+      const currentEdges = useAppStore.getState().edges;
+      const localCreatedEdges = currentEdges.filter(e => e.revision_action === 'create');
+      const localCreatedIds = new Set(localCreatedEdges.map(e => e.edge_id));
+
+      // Server edges, excluding ones we have locally created (local takes precedence)
+      const serverEdges = edgesData.filter(e => !localCreatedIds.has(e.edge_id));
+
+      // Combine server edges + local created edges
+      setEdges([...serverEdges, ...localCreatedEdges]);
+    }
   }, [edgesData, setEdges]);
 
   if (videoLoading) {
@@ -210,6 +224,8 @@ function VideoAnnotation() {
           )}
         </div>
         <div className="flex items-center gap-4">
+          <ImportButton videoId={video.video_id} />
+          <SaveButton videoId={video.video_id} />
           <ExportButton videoId={video.video_id} />
           <UserSelector />
         </div>
