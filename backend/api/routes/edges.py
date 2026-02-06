@@ -51,7 +51,7 @@ async def get_edges(
     loader = VSGLoader(video.vsg_path)
 
     if include_revisions:
-        service = AnnotationService(db, loader)
+        service = AnnotationService(db, loader, video_id=video_id)
         edges = await service.get_edges_with_revisions()
     else:
         edges = loader.get_all_edges()
@@ -136,7 +136,7 @@ async def get_edge(
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=video_id)
 
     edge = await service.get_edge_with_revisions(edge_id)
 
@@ -160,6 +160,6 @@ async def get_edge_history(
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=video_id)
 
     return await service.get_edge_history(video_id, edge_id)

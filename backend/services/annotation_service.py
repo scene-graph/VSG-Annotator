@@ -21,11 +21,13 @@ from backend.models.schemas import (
 class AnnotationService:
     """Service for managing edge annotations."""
 
-    def __init__(self, session: AsyncSession, vsg_loader: VSGLoader):
+    def __init__(self, session: AsyncSession, vsg_loader: VSGLoader, video_id: str = None):
         """Initialize with database session and VSG loader."""
         self.session = session
         self.vsg_loader = vsg_loader
         self.tracker = RevisionTracker(session)
+        # Use provided video_id or fall back to VSG metadata
+        self._video_id = video_id or vsg_loader.video_id
 
     async def accept_edge(self, annotation: AnnotationAccept) -> dict:
         """Accept an edge as-is."""
@@ -150,9 +152,9 @@ class AnnotationService:
         if edge is None:
             return None
 
-        # Check for latest revision
+        # Check for latest revision (use canonical video_id)
         latest = await self.tracker.get_latest_revision(
-            self.vsg_loader.video_id, edge_id
+            self._video_id, edge_id
         )
 
         if latest is not None:
@@ -181,10 +183,9 @@ class AnnotationService:
     async def get_edges_with_revisions(self) -> list[EdgeResponse]:
         """Get all edges with their revision statuses and applied modifications."""
         edges = self.vsg_loader.get_all_edges()
-        video_id = self.vsg_loader.video_id
 
-        # Get all revisions for this video
-        revisions = await self.tracker.get_video_revisions(video_id)
+        # Get all revisions for this video (use canonical video_id)
+        revisions = await self.tracker.get_video_revisions(self._video_id)
 
         # Build a map of edge_id -> latest revision (full object)
         from backend.models.database import EdgeRevision
@@ -212,19 +213,44 @@ class AnnotationService:
                     if rev.new_attributes:
                         edge.attributes = MotionAttributes(**rev.new_attributes)
 
+        # Also include newly created edges from the database
+        created_edges = await self.get_created_edges()
+        edges.extend(created_edges)
+
         return edges
 
     async def get_created_edges(self) -> list[EdgeResponse]:
         """Get all newly created edges as EdgeResponse objects."""
         import json
 
-        created_revisions = await self.tracker.get_created_edges(self.vsg_loader.video_id)
+        created_revisions = await self.tracker.get_created_edges(self._video_id)
+
+        # Get all nodes for category lookups
+        all_nodes = self.vsg_loader.get_all_nodes()
 
         edges = []
         for rev in created_revisions:
             # Build EdgeResponse from revision data
             source = json.loads(rev.new_source) if rev.new_source else []
             target = json.loads(rev.new_target) if rev.new_target else []
+
+            # Look up categories from node data
+            source_list = source if isinstance(source, list) else [source]
+            target_list = target if isinstance(target, list) else [target]
+
+            source_category = [
+                all_nodes[nid].category if nid in all_nodes else "unknown"
+                for nid in source_list
+            ]
+            target_category = [
+                all_nodes[nid].category if nid in all_nodes else "unknown"
+                for nid in target_list
+            ]
+
+            # For static/dynamic edges with single source/target, use string instead of list
+            if rev.edge_type in ("static", "dynamic"):
+                source_category = source_category[0] if len(source_category) == 1 else source_category
+                target_category = target_category[0] if len(target_category) == 1 else target_category
 
             from backend.models.schemas import MotionAttributes, TimePeriod
 
@@ -240,8 +266,8 @@ class AnnotationService:
                     edge_type=rev.edge_type,
                     source=source,
                     target=target,
-                    source_category=[],  # Will need node lookup
-                    target_category=[],
+                    source_category=source_category,
+                    target_category=target_category,
                     predicate=rev.new_predicate or "",
                     confidence=1.0,
                     confidence_round1=1.0,
