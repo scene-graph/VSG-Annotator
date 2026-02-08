@@ -7,7 +7,6 @@ import { useModifyEdge } from '../../hooks/useVideo';
 interface EdgeTimelineProps {
   edges: Edge[];
   totalFrames: number;
-  height?: number;
 }
 
 const EDGE_TYPE_COLORS = {
@@ -24,6 +23,7 @@ const MIN_EDGE_FRAMES = 1;
 
 interface DragState {
   edgeId: string;
+  segmentIndex: number;
   handle: 'left' | 'right';
   originalStartFrame: number;
   originalEndFrame: number;
@@ -31,13 +31,31 @@ interface DragState {
   currentEndFrame: number;
 }
 
-export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineProps) {
+const getEdgeTimePeriods = (edge: Edge): TimePeriod[] => {
+  const periods = edge.time_periods && edge.time_periods.length > 0
+    ? edge.time_periods
+    : [edge.time_period];
+  return [...periods].sort((a, b) => a.start_frame - b.start_frame);
+};
+
+const mergeTimePeriods = (periods: TimePeriod[]): TimePeriod => {
+  if (periods.length === 0) {
+    return { start_frame: 0, end_frame: 0 };
+  }
+  const start = Math.min(...periods.map((p) => p.start_frame));
+  const end = Math.max(...periods.map((p) => p.end_frame));
+  return { start_frame: start, end_frame: end };
+};
+
+export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [containerHeight, setContainerHeight] = useState(200);
 
   // Refs to access latest values from D3 callbacks (avoid stale closures)
   const dragStateRef = useRef<DragState | null>(null);
-  const handleDragEndRef = useRef<(edge: Edge, newTimePeriod: TimePeriod) => void>();
+  const handleDragEndRef = useRef<(edge: Edge, newTimePeriods: TimePeriod[]) => void>();
   const edgesRef = useRef<Edge[]>([]);
   const justModifiedEdgeIdRef = useRef<string | null>(null);
   const currentUserRef = useRef<typeof currentUser>(null);
@@ -55,27 +73,48 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
   const modifyMutation = useModifyEdge();
   const setEdgeDragState = useAppStore((state) => state.setEdgeDragState);
 
+  // Track container height
+  useEffect(() => {
+    if (!wrapperRef.current) return;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const height = entry.contentRect.height;
+        // Account for header and legend (approximately 80px)
+        setContainerHeight(Math.max(100, height - 80));
+      }
+    });
+
+    resizeObserver.observe(wrapperRef.current);
+    return () => resizeObserver.disconnect();
+  }, []);
+
   // Sort edges by type, then by start frame
   const sortedEdges = useMemo(() => {
     return [...edges].sort((a, b) => {
       const typeOrder = { static: 0, dynamic: 1, fg_bg: 2 };
       const typeCompare = typeOrder[a.edge_type] - typeOrder[b.edge_type];
       if (typeCompare !== 0) return typeCompare;
-      return a.time_period.start_frame - b.time_period.start_frame;
+      const aStart = getEdgeTimePeriods(a)[0]?.start_frame ?? 0;
+      const bStart = getEdgeTimePeriods(b)[0]?.start_frame ?? 0;
+      return aStart - bStart;
     });
   }, [edges]);
 
   // Handle drag end - save modification to API
-  const handleDragEnd = useCallback((edge: Edge, newTimePeriod: TimePeriod) => {
+  const handleDragEnd = useCallback((edge: Edge, newTimePeriods: TimePeriod[]) => {
     if (!currentUser || !currentVideo) return;
 
     // Mark this edge as just modified so we can scroll to it
     justModifiedEdgeIdRef.current = edge.edge_id;
 
+    const merged = mergeTimePeriods(newTimePeriods);
+
     // Build updated edge
     const updatedEdge: Edge = {
       ...edge,
-      time_period: newTimePeriod,
+      time_period: merged,
+      time_periods: newTimePeriods,
       has_revision: true,
       revision_action: 'modify'
     };
@@ -97,7 +136,7 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
       edge_id: edge.edge_id,
       edge_type: edge.edge_type,
       user_id: currentUser.id,
-      new_time_period: newTimePeriod,
+      new_time_periods: newTimePeriods,
     }, {
       onError: (error) => {
         console.error('Failed to modify edge:', error);
@@ -136,6 +175,7 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
     if (dragState) {
       setEdgeDragState({
         edgeId: dragState.edgeId,
+        segmentIndex: dragState.segmentIndex,
         handle: dragState.handle,
         currentStartFrame: dragState.currentStartFrame,
         currentEndFrame: dragState.currentEndFrame,
@@ -148,8 +188,10 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
   // Create drag behavior for resize handles
   const createDragBehavior = useCallback((
     edge: Edge,
+    segmentIndex: number,
     handle: 'left' | 'right',
-    xScale: d3.ScaleLinear<number, number>
+    xScale: d3.ScaleLinear<number, number>,
+    period: TimePeriod
   ) => {
     return d3.drag<SVGRectElement, unknown>()
       .on('start', (event) => {
@@ -165,11 +207,12 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
 
         setDragState({
           edgeId: edge.edge_id,
+          segmentIndex,
           handle,
-          originalStartFrame: edge.time_period.start_frame,
-          originalEndFrame: edge.time_period.end_frame,
-          currentStartFrame: edge.time_period.start_frame,
-          currentEndFrame: edge.time_period.end_frame,
+          originalStartFrame: period.start_frame,
+          originalEndFrame: period.end_frame,
+          currentStartFrame: period.start_frame,
+          currentEndFrame: period.end_frame,
         });
         setSelectedEdge(edge);
       })
@@ -196,10 +239,16 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
           // Find current edge from latest edges list (avoid stale closure)
           const currentEdge = edgesRef.current.find(e => e.edge_id === currentDrag.edgeId);
           if (currentEdge) {
-            handleDragEndRef.current?.(currentEdge, {
-              start_frame: currentDrag.currentStartFrame,
-              end_frame: currentDrag.currentEndFrame,
-            });
+            const periods = getEdgeTimePeriods(currentEdge);
+            const updatedPeriods = periods.map((tp, idx) =>
+              idx === currentDrag.segmentIndex
+                ? { start_frame: currentDrag.currentStartFrame, end_frame: currentDrag.currentEndFrame }
+                : tp
+            );
+            handleDragEndRef.current?.(
+              currentEdge,
+              updatedPeriods.sort((a, b) => a.start_frame - b.start_frame)
+            );
           }
         }
         setDragState(null);
@@ -213,7 +262,7 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
     const container = containerRef.current;
     const width = container.clientWidth;
     const contentHeight = Math.max(
-      height - MARGIN.top - MARGIN.bottom,
+      containerHeight - MARGIN.top - MARGIN.bottom,
       sortedEdges.length * (LANE_HEIGHT + LANE_PADDING)
     );
 
@@ -267,15 +316,7 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
     // Draw edge bars
     sortedEdges.forEach((edge, i) => {
       const y = MARGIN.top + i * (LANE_HEIGHT + LANE_PADDING);
-
-      // Use drag state for preview if this edge is being dragged
-      const isDragging = dragState?.edgeId === edge.edge_id;
-      const startFrame = isDragging ? dragState.currentStartFrame : edge.time_period.start_frame;
-      const endFrame = isDragging ? dragState.currentEndFrame : edge.time_period.end_frame;
-
-      const startX = xScale(startFrame);
-      const endX = xScale(endFrame);
-      const barWidth = Math.max(endX - startX, 2);
+      const edgePeriods = getEdgeTimePeriods(edge);
 
       const isSelected = selectedEdge?.edge_id === edge.edge_id;
       const color = EDGE_TYPE_COLORS[edge.edge_type];
@@ -293,123 +334,137 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
         .text(`${edge.predicate}`)
         .on('click', () => {
           setSelectedEdge(edge);
-          setCurrentFrame(edge.time_period.start_frame);
+          const start = edgePeriods[0]?.start_frame ?? edge.time_period.start_frame;
+          setCurrentFrame(start);
         });
 
-      // Ghost showing original position during drag
-      if (isDragging) {
+      edgePeriods.forEach((period, segmentIndex) => {
+        const isDragging =
+          dragState?.edgeId === edge.edge_id &&
+          dragState.segmentIndex === segmentIndex;
+        const startFrame = isDragging ? dragState.currentStartFrame : period.start_frame;
+        const endFrame = isDragging ? dragState.currentEndFrame : period.end_frame;
+
+        const startX = xScale(startFrame);
+        const endX = xScale(endFrame);
+        const barWidth = Math.max(endX - startX, 2);
+        const isLastSegment = segmentIndex === edgePeriods.length - 1;
+
+        // Ghost showing original position during drag
+        if (isDragging) {
+          edgeGroup.append('rect')
+            .attr('x', xScale(period.start_frame))
+            .attr('y', y)
+            .attr('width', Math.max(xScale(period.end_frame) - xScale(period.start_frame), 2))
+            .attr('height', LANE_HEIGHT)
+            .attr('fill', 'none')
+            .attr('stroke', color)
+            .attr('stroke-dasharray', '4 2')
+            .attr('stroke-opacity', 0.5)
+            .attr('rx', 4);
+        }
+
+        // Edge bar
         edgeGroup.append('rect')
-          .attr('x', xScale(edge.time_period.start_frame))
+          .attr('x', startX)
           .attr('y', y)
-          .attr('width', Math.max(xScale(edge.time_period.end_frame) - xScale(edge.time_period.start_frame), 2))
+          .attr('width', barWidth)
           .attr('height', LANE_HEIGHT)
-          .attr('fill', 'none')
-          .attr('stroke', color)
-          .attr('stroke-dasharray', '4 2')
-          .attr('stroke-opacity', 0.5)
-          .attr('rx', 4);
-      }
+          .attr('fill', color)
+          .attr('fill-opacity', isDragging ? 0.5 : (isSelected ? 1 : 0.7))
+          .attr('rx', 4)
+          .attr('cursor', 'pointer')
+          .attr('stroke', isDragging ? '#fbbf24' : (isSelected ? '#22c55e' : 'none'))
+          .attr('stroke-width', 2)
+          .on('click', (event) => {
+            event.stopPropagation();  // Prevent overlay from also handling
+            setSelectedEdge(edge);
+            setCurrentFrame(period.start_frame);
+          })
+          .on('mouseover', function() {
+            if (!isDragging) d3.select(this).attr('fill-opacity', 1);
+          })
+          .on('mouseout', function() {
+            if (!isDragging) d3.select(this).attr('fill-opacity', isSelected ? 1 : 0.7);
+          });
 
-      // Edge bar
-      edgeGroup.append('rect')
-        .attr('x', startX)
-        .attr('y', y)
-        .attr('width', barWidth)
-        .attr('height', LANE_HEIGHT)
-        .attr('fill', color)
-        .attr('fill-opacity', isDragging ? 0.5 : (isSelected ? 1 : 0.7))
-        .attr('rx', 4)
-        .attr('cursor', 'pointer')
-        .attr('stroke', isDragging ? '#fbbf24' : (isSelected ? '#22c55e' : 'none'))
-        .attr('stroke-width', 2)
-        .on('click', (event) => {
-          event.stopPropagation();  // Prevent overlay from also handling
-          setSelectedEdge(edge);
-          setCurrentFrame(edge.time_period.start_frame);
-        })
-        .on('mouseover', function() {
-          if (!isDragging) d3.select(this).attr('fill-opacity', 1);
-        })
-        .on('mouseout', function() {
-          if (!isDragging) d3.select(this).attr('fill-opacity', isSelected ? 1 : 0.7);
-        });
+        // Handle indicators (visible on hover)
+        const leftIndicator = edgeGroup.append('rect')
+          .attr('x', startX)
+          .attr('y', y + 4)
+          .attr('width', 3)
+          .attr('height', LANE_HEIGHT - 8)
+          .attr('fill', '#fff')
+          .attr('fill-opacity', isDragging ? 0.7 : 0)
+          .attr('rx', 1)
+          .attr('pointer-events', 'none');
 
-      // Handle indicators (visible on hover)
-      const leftIndicator = edgeGroup.append('rect')
-        .attr('x', startX)
-        .attr('y', y + 4)
-        .attr('width', 3)
-        .attr('height', LANE_HEIGHT - 8)
-        .attr('fill', '#fff')
-        .attr('fill-opacity', isDragging ? 0.7 : 0)
-        .attr('rx', 1)
-        .attr('pointer-events', 'none');
+        const rightIndicator = edgeGroup.append('rect')
+          .attr('x', endX - 3)
+          .attr('y', y + 4)
+          .attr('width', 3)
+          .attr('height', LANE_HEIGHT - 8)
+          .attr('fill', '#fff')
+          .attr('fill-opacity', isDragging ? 0.7 : 0)
+          .attr('rx', 1)
+          .attr('pointer-events', 'none');
 
-      const rightIndicator = edgeGroup.append('rect')
-        .attr('x', endX - 3)
-        .attr('y', y + 4)
-        .attr('width', 3)
-        .attr('height', LANE_HEIGHT - 8)
-        .attr('fill', '#fff')
-        .attr('fill-opacity', isDragging ? 0.7 : 0)
-        .attr('rx', 1)
-        .attr('pointer-events', 'none');
+        // Left drag handle (invisible, for hit detection)
+        edgeGroup.append('rect')
+          .attr('x', startX - HANDLE_WIDTH / 2)
+          .attr('y', y)
+          .attr('width', HANDLE_WIDTH)
+          .attr('height', LANE_HEIGHT)
+          .attr('fill', 'transparent')
+          .attr('cursor', 'ew-resize')
+          .on('mouseenter', () => {
+            leftIndicator.attr('fill-opacity', 0.7);
+          })
+          .on('mouseleave', () => {
+            if (!isDragging) leftIndicator.attr('fill-opacity', 0);
+          })
+          .call(createDragBehavior(edge, segmentIndex, 'left', xScale, period) as any);
 
-      // Left drag handle (invisible, for hit detection)
-      edgeGroup.append('rect')
-        .attr('x', startX - HANDLE_WIDTH / 2)
-        .attr('y', y)
-        .attr('width', HANDLE_WIDTH)
-        .attr('height', LANE_HEIGHT)
-        .attr('fill', 'transparent')
-        .attr('cursor', 'ew-resize')
-        .on('mouseenter', () => {
-          leftIndicator.attr('fill-opacity', 0.7);
-        })
-        .on('mouseleave', () => {
-          if (!isDragging) leftIndicator.attr('fill-opacity', 0);
-        })
-        .call(createDragBehavior(edge, 'left', xScale) as any);
+        // Right drag handle (invisible, for hit detection)
+        edgeGroup.append('rect')
+          .attr('x', endX - HANDLE_WIDTH / 2)
+          .attr('y', y)
+          .attr('width', HANDLE_WIDTH)
+          .attr('height', LANE_HEIGHT)
+          .attr('fill', 'transparent')
+          .attr('cursor', 'ew-resize')
+          .on('mouseenter', () => {
+            rightIndicator.attr('fill-opacity', 0.7);
+          })
+          .on('mouseleave', () => {
+            if (!isDragging) rightIndicator.attr('fill-opacity', 0);
+          })
+          .call(createDragBehavior(edge, segmentIndex, 'right', xScale, period) as any);
 
-      // Right drag handle (invisible, for hit detection)
-      edgeGroup.append('rect')
-        .attr('x', endX - HANDLE_WIDTH / 2)
-        .attr('y', y)
-        .attr('width', HANDLE_WIDTH)
-        .attr('height', LANE_HEIGHT)
-        .attr('fill', 'transparent')
-        .attr('cursor', 'ew-resize')
-        .on('mouseenter', () => {
-          rightIndicator.attr('fill-opacity', 0.7);
-        })
-        .on('mouseleave', () => {
-          if (!isDragging) rightIndicator.attr('fill-opacity', 0);
-        })
-        .call(createDragBehavior(edge, 'right', xScale) as any);
+        // Validation indicator
+        if (edge.validated && isLastSegment) {
+          edgeGroup.append('circle')
+            .attr('cx', startX + 8)
+            .attr('cy', y + LANE_HEIGHT / 2)
+            .attr('r', 4)
+            .attr('fill', '#22c55e');
+        }
 
-      // Validation indicator
-      if (edge.validated) {
-        edgeGroup.append('circle')
-          .attr('cx', startX + 8)
-          .attr('cy', y + LANE_HEIGHT / 2)
-          .attr('r', 4)
-          .attr('fill', '#22c55e');
-      }
+        // Revision indicator
+        if (edge.has_revision && isLastSegment) {
+          const revColor = {
+            accept: '#22c55e',
+            reject: '#ef4444',
+            modify: '#eab308',
+          }[edge.revision_action || ''] || '#9ca3af';
 
-      // Revision indicator
-      if (edge.has_revision) {
-        const revColor = {
-          accept: '#22c55e',
-          reject: '#ef4444',
-          modify: '#eab308',
-        }[edge.revision_action || ''] || '#9ca3af';
-
-        edgeGroup.append('circle')
-          .attr('cx', endX - 8)
-          .attr('cy', y + LANE_HEIGHT / 2)
-          .attr('r', 4)
-          .attr('fill', revColor);
-      }
+          edgeGroup.append('circle')
+            .attr('cx', endX - 8)
+            .attr('cy', y + LANE_HEIGHT / 2)
+            .attr('r', 4)
+            .attr('fill', revColor);
+        }
+      });
     });
 
     // Tooltip during drag
@@ -453,7 +508,7 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
       .attr('cy', MARGIN.top)
       .attr('r', 6)
       .attr('fill', '#ef4444');
-  }, [sortedEdges, totalFrames, currentFrame, selectedEdge, setSelectedEdge, setCurrentFrame, height, dragState, createDragBehavior]);
+  }, [sortedEdges, totalFrames, currentFrame, selectedEdge, setSelectedEdge, setCurrentFrame, containerHeight, dragState, createDragBehavior]);
 
   // Scroll to modified edge after re-render
   useEffect(() => {
@@ -503,12 +558,12 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
   }, [sortedEdges, selectedEdge?.edge_id]);
 
   const contentHeight = Math.max(
-    height,
+    containerHeight,
     sortedEdges.length * (LANE_HEIGHT + LANE_PADDING) + MARGIN.top + MARGIN.bottom
   );
 
   return (
-    <div className="bg-gray-800 rounded-lg overflow-hidden relative">
+    <div ref={wrapperRef} className="bg-gray-800 rounded-lg overflow-hidden relative h-full flex flex-col">
       {/* User selection warning */}
       {showUserWarning && (
         <div className="absolute top-0 left-0 right-0 z-10 bg-yellow-600 text-white px-4 py-2 text-sm flex items-center justify-between">
@@ -540,7 +595,7 @@ export function EdgeTimeline({ edges, totalFrames, height = 400 }: EdgeTimelineP
       </div>
 
       {/* Timeline */}
-      <div ref={containerRef} className="overflow-auto" style={{ maxHeight: height }}>
+      <div ref={containerRef} className="overflow-auto flex-1" style={{ maxHeight: containerHeight }}>
         <svg ref={svgRef} width="100%" height={contentHeight} />
       </div>
     </div>
