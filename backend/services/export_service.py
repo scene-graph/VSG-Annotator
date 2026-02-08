@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.revision_tracker import RevisionTracker
 from backend.core.vsg_loader import VSGLoader
-from backend.models.database import MetadataRevision, Video
+from backend.models.database import MetadataRevision, NodeRevision, Video
 
 
 class ExportService:
@@ -42,36 +42,19 @@ class ExportService:
         # Load original VSG
         vsg = self.vsg_loader.load().copy()
 
-        # Get all revisions
+        # Get all revisions (newest first) and keep latest per edge
         revisions = await self.tracker.get_video_revisions(self.video_id)
-
-        # Build revision maps
-        accepted_edges: set[str] = set()
-        rejected_edges: set[str] = set()
-        modifications: dict[str, dict] = {}
-
+        latest_edge_revisions: dict[str, Any] = {}
         for rev in revisions:
             if user_id is not None and rev.user_id != user_id:
                 continue
-
-            if rev.action == "accept":
-                accepted_edges.add(rev.edge_id)
-            elif rev.action == "reject":
-                rejected_edges.add(rev.edge_id)
-            elif rev.action == "modify":
-                modifications[rev.edge_id] = {
-                    "predicate": rev.new_predicate,
-                    "time_period": rev.new_time_period,
-                    "attributes": rev.new_attributes,
-                    "source": json.loads(rev.new_source) if rev.new_source else None,
-                    "target": json.loads(rev.new_target) if rev.new_target else None,
-                }
+            if rev.edge_id not in latest_edge_revisions:
+                latest_edge_revisions[rev.edge_id] = rev
 
         # Process static edges
         vsg["static_scene_graph"]["edges"] = self._process_edges(
             vsg["static_scene_graph"]["edges"],
-            rejected_edges,
-            modifications,
+            latest_edge_revisions,
             include_rejected,
             apply_modifications,
         )
@@ -79,8 +62,7 @@ class ExportService:
         # Process dynamic edges
         vsg["dynamic_scene_graph"]["edges"] = self._process_edges(
             vsg["dynamic_scene_graph"]["edges"],
-            rejected_edges,
-            modifications,
+            latest_edge_revisions,
             include_rejected,
             apply_modifications,
         )
@@ -88,8 +70,7 @@ class ExportService:
         # Process FG-BG edges
         vsg["foreground_background_relations"]["edges"] = self._process_edges(
             vsg["foreground_background_relations"]["edges"],
-            rejected_edges,
-            modifications,
+            latest_edge_revisions,
             include_rejected,
             apply_modifications,
         )
@@ -100,7 +81,15 @@ class ExportService:
             if user_id is not None and rev.user_id != user_id:
                 continue
 
+            latest_rev = latest_edge_revisions.get(rev.edge_id)
+            if latest_rev is not None and latest_rev.action == "delete":
+                continue
+
             new_edge = self._build_edge_from_revision(rev)
+            if latest_rev is not None and latest_rev.action == "modify" and apply_modifications:
+                new_edge = self._apply_edge_modifications(new_edge, latest_rev)
+            if latest_rev is not None and latest_rev.action in {"modify", "accept", "create"}:
+                new_edge = self._mark_edge_validated(new_edge)
 
             if rev.edge_type == "static":
                 vsg["static_scene_graph"]["edges"].append(new_edge)
@@ -108,6 +97,9 @@ class ExportService:
                 vsg["dynamic_scene_graph"]["edges"].append(new_edge)
             elif rev.edge_type == "fg_bg":
                 vsg["foreground_background_relations"]["edges"].append(new_edge)
+
+        # Apply node revisions (attributes)
+        vsg = await self._apply_node_revisions(vsg, user_id)
 
         # Apply metadata revisions (scene_info, camera_motion)
         vsg = await self._apply_metadata_revisions(vsg, user_id)
@@ -159,11 +151,60 @@ class ExportService:
 
         return vsg
 
+    async def _apply_node_revisions(self, vsg: dict, user_id: int | None = None) -> dict:
+        """Apply node attribute revisions to VSG nodes."""
+        result = await self.session.execute(
+            select(Video).where(Video.video_id == self.video_id)
+        )
+        video = result.scalar_one_or_none()
+
+        if video is None:
+            return vsg
+
+        query = (
+            select(NodeRevision)
+            .where(NodeRevision.video_id == video.id)
+            .order_by(NodeRevision.created_at.desc())
+        )
+        if user_id is not None:
+            query = query.where(NodeRevision.user_id == user_id)
+
+        result = await self.session.execute(query)
+        revisions = result.scalars().all()
+
+        latest_node_revisions: dict[str, NodeRevision] = {}
+        for rev in revisions:
+            if rev.node_id not in latest_node_revisions:
+                latest_node_revisions[rev.node_id] = rev
+
+        if not latest_node_revisions:
+            return vsg
+
+        def apply_to_nodes(nodes: list[dict]) -> None:
+            for node in nodes:
+                node_id = node.get("node_id")
+                rev = latest_node_revisions.get(node_id)
+                if rev is None:
+                    continue
+
+                attrs = node.get("attributes", {})
+                new_attrs = rev.new_attributes or {}
+                if "visual" in new_attrs:
+                    attrs["visual"] = new_attrs["visual"]
+                if "physical" in new_attrs:
+                    attrs["physical"] = new_attrs["physical"]
+                node["attributes"] = attrs
+                node["human_modified"] = True
+
+        apply_to_nodes(vsg.get("static_scene_graph", {}).get("nodes", []))
+        apply_to_nodes(vsg.get("dynamic_scene_graph", {}).get("nodes", []))
+
+        return vsg
+
     def _process_edges(
         self,
         edges: list[dict],
-        rejected_edges: set[str],
-        modifications: dict[str, dict],
+        latest_edge_revisions: dict[str, Any],
         include_rejected: bool,
         apply_modifications: bool,
     ) -> list[dict]:
@@ -172,9 +213,14 @@ class ExportService:
 
         for edge in edges:
             edge_id = edge["edge_id"]
+            rev = latest_edge_revisions.get(edge_id)
+
+            # Handle deleted edges
+            if rev is not None and rev.action == "delete":
+                continue
 
             # Handle rejected edges
-            if edge_id in rejected_edges:
+            if rev is not None and rev.action == "reject":
                 if include_rejected:
                     edge = edge.copy()
                     edge["human_rejected"] = True
@@ -182,30 +228,37 @@ class ExportService:
                 continue
 
             # Apply modifications
-            if apply_modifications and edge_id in modifications:
-                edge = edge.copy()
-                mods = modifications[edge_id]
+            if rev is not None and rev.action == "modify" and apply_modifications:
+                edge = self._apply_edge_modifications(edge.copy(), rev)
 
-                if mods["predicate"] is not None:
-                    edge["predicate"] = mods["predicate"]
-
-                if mods["time_period"] is not None:
-                    edge["time_period"] = mods["time_period"]
-
-                if mods["attributes"] is not None:
-                    edge["attributes"] = mods["attributes"]
-
-                if mods["source"] is not None:
-                    edge["source"] = mods["source"]
-
-                if mods["target"] is not None:
-                    edge["target"] = mods["target"]
-
-                edge["human_modified"] = True
+            if rev is not None and rev.action in {"modify", "accept"}:
+                edge = self._mark_edge_validated(edge.copy())
 
             result.append(edge)
 
         return result
+
+    def _apply_edge_modifications(self, edge: dict, rev: Any) -> dict:
+        """Apply modifications from a revision to an edge."""
+        if rev.new_predicate is not None:
+            edge["predicate"] = rev.new_predicate
+        if rev.new_time_period is not None:
+            edge["time_period"] = rev.new_time_period
+        if rev.new_attributes is not None:
+            edge["attributes"] = rev.new_attributes
+        if rev.new_source is not None:
+            edge["source"] = json.loads(rev.new_source)
+        if rev.new_target is not None:
+            edge["target"] = json.loads(rev.new_target)
+        edge["human_modified"] = True
+        return edge
+
+    def _mark_edge_validated(self, edge: dict) -> dict:
+        """Mark edge as human validated."""
+        edge["validated"] = True
+        edge["validation_reasoning_round1"] = "Human annotated"
+        edge["validation_reasoning_round2"] = ""
+        return edge
 
     def _build_edge_from_revision(self, rev) -> dict:
         """Build an edge dict from a create revision."""
@@ -278,6 +331,9 @@ class ExportService:
             "total_fg_bg_edges": len(fg_bg_edges),
             "unique_categories": sorted(list(all_categories)),
             "unique_predicates": sorted(list(all_predicates)),
+            "human_modified_nodes": len(
+                [n for n in static_nodes + dynamic_nodes if n.get("human_modified")]
+            ),
             "human_modified_edges": len(
                 [e for e in static_edges + dynamic_edges + fg_bg_edges if e.get("human_modified")]
             ),
@@ -303,6 +359,7 @@ class ExportService:
 
         # Count metadata revisions
         metadata_stats = {"scene_info": 0, "camera_motion": 0}
+        node_revision_count = 0
         if video is not None:
             for metadata_type in ["scene_info", "camera_motion"]:
                 result = await self.session.execute(
@@ -314,8 +371,14 @@ class ExportService:
                 )
                 metadata_stats[metadata_type] = len(result.scalars().all())
 
+            result = await self.session.execute(
+                select(NodeRevision).where(NodeRevision.video_id == video.id)
+            )
+            node_revision_count = len(result.scalars().all())
+
         return {
             **edge_stats,
             "scene_info_revisions": metadata_stats["scene_info"],
             "camera_motion_revisions": metadata_stats["camera_motion"],
+            "node_revisions": node_revision_count,
         }

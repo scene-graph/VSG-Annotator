@@ -6,6 +6,10 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
+# Resolve .env relative to this file's parent (project root)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -33,7 +37,7 @@ class Settings(BaseSettings):
     max_page_size: int = 200
 
     class Config:
-        env_file = ".env"
+        env_file = str(_ENV_FILE)
         env_file_encoding = "utf-8"
 
 

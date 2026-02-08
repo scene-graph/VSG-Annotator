@@ -42,6 +42,7 @@ export function ExportButton({ videoId }: ExportButtonProps) {
   const revisionCount = summary?.revisions?.total || 0;
   const sceneInfoRevisions = summary?.revisions?.scene_info_revisions || 0;
   const cameraMotionRevisions = summary?.revisions?.camera_motion_revisions || 0;
+  const nodeRevisions = summary?.revisions?.node_revisions || 0;
 
   return (
     <div className="relative" ref={dropdownRef}>
@@ -98,6 +99,14 @@ export function ExportButton({ videoId }: ExportButtonProps) {
                       <div className="text-gray-400">
                         Camera Motion: <span className="text-orange-400">{cameraMotionRevisions}</span>
                       </div>
+                    </div>
+                  </div>
+                )}
+                {nodeRevisions > 0 && (
+                  <div className="mt-2 pt-2 border-t border-gray-700">
+                    <div className="text-gray-400 text-xs">Node Revisions</div>
+                    <div className="text-gray-400 text-xs mt-1">
+                      Modified Nodes: <span className="text-emerald-400">{nodeRevisions}</span>
                     </div>
                   </div>
                 )}
