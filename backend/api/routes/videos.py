@@ -13,7 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import settings
 from backend.core.vsg_loader import VSGLoader
 from backend.models.database import MetadataRevision, Video, get_db
-from backend.models.schemas import NodeResponse, VideoDetail, VideoSummary
+from backend.models.schemas import (
+    NodePhysicalAttributes,
+    NodeResponse,
+    NodeVisualAttributes,
+    VideoDetail,
+    VideoSummary,
+)
 from backend.services.video_service import VideoService, get_frame_for_video, get_disk_frame_cache
 
 
@@ -301,6 +307,22 @@ async def get_nodes(
     except Exception:
         # VSG file missing or corrupt - return empty list
         return []
+
+    # Apply latest node revisions (attributes + static/dynamic)
+    from backend.core.revision_tracker import RevisionTracker
+    tracker = RevisionTracker(db)
+    for node in nodes:
+        latest_rev = await tracker.get_latest_node_revision(video_id, node.node_id)
+        if latest_rev:
+            if latest_rev.new_is_static is not None:
+                node.is_static = latest_rev.new_is_static
+            if latest_rev.new_attributes:
+                visual = latest_rev.new_attributes.get("visual")
+                physical = latest_rev.new_attributes.get("physical")
+                if visual:
+                    node.attributes.visual = NodeVisualAttributes(**visual)
+                if physical:
+                    node.attributes.physical = NodePhysicalAttributes(**physical)
 
     # Filter by static/dynamic
     if is_static is not None:
