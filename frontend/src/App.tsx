@@ -15,6 +15,7 @@ import { ExportButton } from './components/Export';
 import { ImportButton } from './components/Import';
 import { SaveButton } from './components/Save';
 import clsx from 'clsx';
+import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 
 function VideoList() {
   const { data: videos, isLoading, error } = useVideos();
@@ -309,35 +310,49 @@ function VideoAnnotation() {
       {/* Main content */}
       <div className="flex-1 flex min-h-0 p-4 gap-4">
         {/* Left column: Video + Timeline */}
-        <div className="flex-1 flex flex-col gap-4 min-w-0">
-          {/* Video player */}
-          <div className="h-[45%] min-h-[280px]">
-            <VideoPlayer
-              videoId={video.video_id}
-              totalFrames={video.total_frames || 100}
-              fps={video.fps || 5}
-              resolution={video.resolution || { width: 1920, height: 1080 }}
-              nodes={nodes}
-            />
-          </div>
+        <div className="flex-1 flex flex-col min-w-0">
+          <PanelGroup orientation="vertical" id="main-layout">
+            {/* Video player panel */}
+            <Panel defaultSize={45} minSize={20} maxSize={70}>
+              <div className="h-full pb-2">
+                <VideoPlayer
+                  videoId={video.video_id}
+                  totalFrames={video.total_frames || 100}
+                  fps={video.fps || 5}
+                  resolution={video.resolution || { width: 1920, height: 1080 }}
+                  nodes={nodes}
+                />
+              </div>
+            </Panel>
 
-          {/* Tracklet Timeline */}
-          <div className="min-h-[120px] max-h-[180px]">
-            <TrackletTimeline
-              nodes={nodes}
-              totalFrames={video.total_frames || 100}
-              height={160}
-            />
-          </div>
+            <PanelResizeHandle className="h-2 bg-transparent hover:bg-blue-500/20 transition-colors relative">
+              <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 bg-gray-700" />
+            </PanelResizeHandle>
 
-          {/* Edge Timeline */}
-          <div className="flex-1 min-h-[180px]">
-            <EdgeTimeline
-              edges={edges}
-              totalFrames={video.total_frames || 100}
-              height={220}
-            />
-          </div>
+            {/* Tracklet Timeline panel */}
+            <Panel defaultSize={20} minSize={10} maxSize={40}>
+              <div className="h-full py-2">
+                <TrackletTimeline
+                  nodes={nodes}
+                  totalFrames={video.total_frames || 100}
+                />
+              </div>
+            </Panel>
+
+            <PanelResizeHandle className="h-2 bg-transparent hover:bg-blue-500/20 transition-colors relative">
+              <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 bg-gray-700" />
+            </PanelResizeHandle>
+
+            {/* Edge Timeline panel */}
+            <Panel defaultSize={35} minSize={20} maxSize={60}>
+              <div className="h-full pt-2">
+                <EdgeTimeline
+                  edges={edges}
+                  totalFrames={video.total_frames || 100}
+                />
+              </div>
+            </Panel>
+          </PanelGroup>
         </div>
 
         {/* Resize handle */}

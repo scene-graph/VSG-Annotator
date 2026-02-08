@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, useState } from 'react';
 import * as d3 from 'd3';
 import type { Node } from '../../types';
 import { useAppStore, useCurrentFrame, useSelectedEdge, useSelectedNode, useSourceNodes, useTargetNodes, useEdgeDragState, useEdgeCreation } from '../../store';
@@ -6,7 +6,6 @@ import { useAppStore, useCurrentFrame, useSelectedEdge, useSelectedNode, useSour
 interface TrackletTimelineProps {
   nodes: Node[];
   totalFrames: number;
-  height?: number;
 }
 
 // Color scheme matching bbox overlay
@@ -63,10 +62,13 @@ function getContiguousSegments(node: Node): Array<{ start: number; end: number }
   return segments;
 }
 
-export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletTimelineProps) {
+export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const justSelectedNodeIdRef = useRef<string | null>(null);
+  const nodeOrderRef = useRef<Map<string, number>>(new Map());
+  const [containerHeight, setContainerHeight] = useState(200);
 
   const currentFrame = useCurrentFrame();
   const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
@@ -82,40 +84,56 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
   const toggleSourceNode = useAppStore((state) => state.toggleSourceNode);
   const toggleTargetNode = useAppStore((state) => state.toggleTargetNode);
 
-  // Sort nodes by category, then by start frame
+  // Track container height
+  useEffect(() => {
+    if (!wrapperRef.current) return;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const height = entry.contentRect.height;
+        // Account for header and legend (approximately 80px)
+        setContainerHeight(Math.max(100, height - 80));
+      }
+    });
+
+    resizeObserver.observe(wrapperRef.current);
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  // Keep a stable node order based on initial category + start-frame sort
   const sortedNodes = useMemo(() => {
-    return [...nodes]
+    const baseNodes = [...nodes]
       .map((node) => ({
         node,
         segments: getContiguousSegments(node),
         range: getTrackletRange(node),
       }))
       .sort((a, b) => {
-        // First, sort selected node to top
-        const aIsSelected = selectedNode?.node_id === a.node.node_id;
-        const bIsSelected = selectedNode?.node_id === b.node.node_id;
-        if (aIsSelected && !bIsSelected) return -1;
-        if (!aIsSelected && bIsSelected) return 1;
-
-        // Then, sort source nodes to top, then target, then others
-        const aIsSource = sourceNodes.includes(a.node.node_id);
-        const bIsSource = sourceNodes.includes(b.node.node_id);
-        const aIsTarget = targetNodes.includes(a.node.node_id);
-        const bIsTarget = targetNodes.includes(b.node.node_id);
-
-        if (aIsSource && !bIsSource) return -1;
-        if (!aIsSource && bIsSource) return 1;
-        if (aIsTarget && !bIsTarget) return -1;
-        if (!aIsTarget && bIsTarget) return 1;
-
-        // Then sort by category
         const catCompare = a.node.category.localeCompare(b.node.category);
         if (catCompare !== 0) return catCompare;
-
-        // Then by start frame
         return a.range.start - b.range.start;
       });
-  }, [nodes, sourceNodes, targetNodes, selectedNode]);
+
+    const orderMap = nodeOrderRef.current;
+    if (orderMap.size === 0) {
+      baseNodes.forEach((item, index) => {
+        orderMap.set(item.node.node_id, index);
+      });
+    } else {
+      // Append any new nodes to the end to preserve existing order
+      baseNodes.forEach((item) => {
+        if (!orderMap.has(item.node.node_id)) {
+          orderMap.set(item.node.node_id, orderMap.size);
+        }
+      });
+    }
+
+    return baseNodes.sort((a, b) => {
+      const aOrder = orderMap.get(a.node.node_id) ?? 0;
+      const bOrder = orderMap.get(b.node.node_id) ?? 0;
+      return aOrder - bOrder;
+    });
+  }, [nodes]);
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current) return;
@@ -123,7 +141,7 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
     const container = containerRef.current;
     const width = container.clientWidth;
     const contentHeight = Math.max(
-      height - MARGIN.top - MARGIN.bottom,
+      containerHeight - MARGIN.top - MARGIN.bottom,
       sortedNodes.length * (LANE_HEIGHT + LANE_PADDING)
     );
 
@@ -161,39 +179,45 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
 
     // Draw edge time period overlay (behind tracklets)
     if (selectedEdge) {
-      const startX = xScale(selectedEdge.time_period.start_frame);
-      const endX = xScale(selectedEdge.time_period.end_frame);
-      const overlayWidth = Math.max(endX - startX, 2);
+      const edgePeriods = selectedEdge.time_periods && selectedEdge.time_periods.length > 0
+        ? [...selectedEdge.time_periods].sort((a, b) => a.start_frame - b.start_frame)
+        : [selectedEdge.time_period];
 
-      g.append('rect')
-        .attr('x', startX)
-        .attr('y', MARGIN.top)
-        .attr('width', overlayWidth)
-        .attr('height', contentHeight)
-        .attr('fill', COLORS.edgePeriod)
-        .attr('fill-opacity', 0.15)
-        .attr('pointer-events', 'none');
+      edgePeriods.forEach((period) => {
+        const startX = xScale(period.start_frame);
+        const endX = xScale(period.end_frame);
+        const overlayWidth = Math.max(endX - startX, 2);
 
-      // Edge period boundaries
-      g.append('line')
-        .attr('x1', startX)
-        .attr('y1', MARGIN.top)
-        .attr('x2', startX)
-        .attr('y2', MARGIN.top + contentHeight)
-        .attr('stroke', COLORS.edgePeriod)
-        .attr('stroke-width', 1)
-        .attr('stroke-dasharray', '4 2')
-        .attr('pointer-events', 'none');
+        g.append('rect')
+          .attr('x', startX)
+          .attr('y', MARGIN.top)
+          .attr('width', overlayWidth)
+          .attr('height', contentHeight)
+          .attr('fill', COLORS.edgePeriod)
+          .attr('fill-opacity', 0.15)
+          .attr('pointer-events', 'none');
 
-      g.append('line')
-        .attr('x1', endX)
-        .attr('y1', MARGIN.top)
-        .attr('x2', endX)
-        .attr('y2', MARGIN.top + contentHeight)
-        .attr('stroke', COLORS.edgePeriod)
-        .attr('stroke-width', 1)
-        .attr('stroke-dasharray', '4 2')
-        .attr('pointer-events', 'none');
+        // Edge period boundaries
+        g.append('line')
+          .attr('x1', startX)
+          .attr('y1', MARGIN.top)
+          .attr('x2', startX)
+          .attr('y2', MARGIN.top + contentHeight)
+          .attr('stroke', COLORS.edgePeriod)
+          .attr('stroke-width', 1)
+          .attr('stroke-dasharray', '4 2')
+          .attr('pointer-events', 'none');
+
+        g.append('line')
+          .attr('x1', endX)
+          .attr('y1', MARGIN.top)
+          .attr('x2', endX)
+          .attr('y2', MARGIN.top + contentHeight)
+          .attr('stroke', COLORS.edgePeriod)
+          .attr('stroke-width', 1)
+          .attr('stroke-dasharray', '4 2')
+          .attr('pointer-events', 'none');
+      });
     }
 
     // Draw drag preview overlay when edge is being dragged in EdgeTimeline
@@ -460,7 +484,7 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
         const frame = Math.round(xScale.invert(mouseX));
         setCurrentFrame(Math.max(0, Math.min(totalFrames - 1, frame)));
       });
-  }, [sortedNodes, totalFrames, currentFrame, selectedEdge, selectedNode, sourceNodes, targetNodes, setCurrentFrame, setSelectedNode, height, edgeDragState, edgeCreation, toggleSourceNode, toggleTargetNode]);
+  }, [sortedNodes, totalFrames, currentFrame, selectedEdge, selectedNode, sourceNodes, targetNodes, setCurrentFrame, setSelectedNode, containerHeight, edgeDragState, edgeCreation, toggleSourceNode, toggleTargetNode]);
 
   // Track selection changes - mark the node as just selected
   useEffect(() => {
@@ -517,7 +541,7 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
   }, [sortedNodes]);
 
   const contentHeight = Math.max(
-    height,
+    containerHeight,
     sortedNodes.length * (LANE_HEIGHT + LANE_PADDING) + MARGIN.top + MARGIN.bottom
   );
 
@@ -526,7 +550,7 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
   }
 
   return (
-    <div className="bg-gray-800 rounded-lg overflow-hidden">
+    <div ref={wrapperRef} className="bg-gray-800 rounded-lg overflow-hidden h-full flex flex-col">
       {/* Edge Creation Mode Banner */}
       {edgeCreation.isCreating && (
         <div className="bg-green-600/20 border-b border-green-500 px-3 py-2 flex items-center justify-between">
@@ -637,7 +661,7 @@ export function TrackletTimeline({ nodes, totalFrames, height = 200 }: TrackletT
       </div>
 
       {/* Timeline */}
-      <div ref={containerRef} className="overflow-auto" style={{ maxHeight: height }}>
+      <div ref={containerRef} className="overflow-auto flex-1" style={{ maxHeight: containerHeight }}>
         <svg ref={svgRef} width="100%" height={contentHeight} />
       </div>
     </div>
