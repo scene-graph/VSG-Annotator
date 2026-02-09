@@ -61,10 +61,14 @@ export const aiApi = {
   /**
    * Get AI-suggested attributes for a node at a specific frame.
    */
-  suggestAttributes: (request: AttributeSuggestionRequest): Promise<AttributeSuggestionResponse> => {
+  suggestAttributes: (
+    request: AttributeSuggestionRequest,
+    signal?: AbortSignal
+  ): Promise<AttributeSuggestionResponse> => {
     return fetchJson(`${API_BASE}/ai/suggest-attributes`, {
       method: 'POST',
       body: JSON.stringify(request),
+      signal,
     });
   },
 
