@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { Node, NodeVisualAttributes, NodePhysicalAttributes } from '../../types';
 import { useAISuggestions } from '../../hooks/useAI';
-import { useAppStore } from '../../store';
+import { useAppStore, useAiSuggestionsByNode, useAiSuggestionFrameByNode, useAiSuggestionStatusByNode, useAiSuggestionSourceByNode } from '../../store';
 import type { AttributeSuggestionResponse } from '../../services/ai';
 import { AIDebugModal } from './AIDebugModal';
 
@@ -57,11 +57,24 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
   // AI suggestions
   const currentFrame = useAppStore((state) => state.currentFrame);
   const aiMutation = useAISuggestions();
+  const aiSuggestionsByNode = useAiSuggestionsByNode();
+  const aiSuggestionFrameByNode = useAiSuggestionFrameByNode();
+  const aiSuggestionStatusByNode = useAiSuggestionStatusByNode();
+  const aiSuggestionSourceByNode = useAiSuggestionSourceByNode();
+  const aiProvider = useAppStore((state) => state.aiProvider);
+  const setAiSuggestion = useAppStore((state) => state.setAiSuggestion);
+  const clearAiSuggestion = useAppStore((state) => state.clearAiSuggestion);
   const [aiSuggestions, setAiSuggestions] = useState<AttributeSuggestionResponse | null>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [debugMode, setDebugMode] = useState(true); // Default to true for debugging
   const [showDebugModal, setShowDebugModal] = useState(false);
   const [debugInfo, setDebugInfo] = useState<any>(null);
+  const storedSuggestion = aiSuggestionsByNode[node.node_id];
+  const storedSuggestionFrame = aiSuggestionFrameByNode[node.node_id];
+  const storedSuggestionStatus = aiSuggestionStatusByNode[node.node_id] ?? 'idle';
+  const storedSuggestionSource = aiSuggestionSourceByNode[node.node_id];
+  const effectiveSuggestion = storedSuggestion ?? aiSuggestions;
+  const showSuggestionPanel = (storedSuggestion && !storedSuggestion.error) || (showSuggestions && aiSuggestions && !aiSuggestions.error);
 
   // Sync local state when node prop changes
   useEffect(() => {
@@ -74,6 +87,12 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
   }, [node.node_id, node.attributes?.visual?.color, node.attributes?.visual?.texture,
       node.attributes?.visual?.material, node.attributes?.physical?.size, node.attributes?.physical?.shape, node.is_static]);
 
+  useEffect(() => {
+    setAiSuggestions(null);
+    setShowSuggestions(false);
+    setDebugInfo(null);
+  }, [node.node_id]);
+
   // Get AI suggestions
   const handleGetAISuggestions = async () => {
     try {
@@ -83,6 +102,7 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
         node_id: node.node_id,
         frame_idx: currentFrame,
         debug: debugMode,
+        provider: aiProvider,
       });
 
       // Always set debug info if in debug mode
@@ -100,6 +120,7 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
             video_id: videoId,
             node_id: node.node_id,
             frame_idx: currentFrame,
+            provider: aiProvider,
             bbox: bboxes[String(currentFrame)],
             frame_path: `Frame ${currentFrame} (UI shows as Frame ${currentFrame + 1})`,
             node_visible_range: nodeFrameRange
@@ -125,6 +146,7 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
       if (!result.error) {
         setAiSuggestions(result);
         setShowSuggestions(true);
+        setAiSuggestion(node.node_id, result, result.frame_idx, 'single');
       } else {
         console.error('AI suggestion error:', result.error);
         // Show error even without debug mode
@@ -173,14 +195,45 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
 
   // Apply all AI suggestions at once
   const applyAllSuggestions = () => {
-    if (aiSuggestions) {
-      setColor(aiSuggestions.visual.color);
-      setTexture(aiSuggestions.visual.texture);
-      setMaterial(aiSuggestions.visual.material);
-      setSize(aiSuggestions.physical.size);
-      setShape(aiSuggestions.physical.shape);
+    if (effectiveSuggestion && !effectiveSuggestion.error) {
+      setColor(effectiveSuggestion.visual.color);
+      setTexture(effectiveSuggestion.visual.texture);
+      setMaterial(effectiveSuggestion.visual.material);
+      setSize(effectiveSuggestion.physical.size);
+      setShape(effectiveSuggestion.physical.shape);
       setShowSuggestions(false);
     }
+  };
+
+  const applyAllAndSave = () => {
+    if (!effectiveSuggestion || effectiveSuggestion.error) {
+      return;
+    }
+
+    setColor(effectiveSuggestion.visual.color);
+    setTexture(effectiveSuggestion.visual.texture);
+    setMaterial(effectiveSuggestion.visual.material);
+    setSize(effectiveSuggestion.physical.size);
+    setShape(effectiveSuggestion.physical.shape);
+    setShowSuggestions(false);
+
+    onSave({
+      visual: {
+        color: effectiveSuggestion.visual.color,
+        texture: effectiveSuggestion.visual.texture,
+        material: effectiveSuggestion.visual.material,
+      },
+      physical: {
+        size: effectiveSuggestion.physical.size,
+        shape: effectiveSuggestion.physical.shape,
+      },
+    });
+  };
+
+  const handleDismissSuggestions = () => {
+    clearAiSuggestion(node.node_id);
+    setAiSuggestions(null);
+    setShowSuggestions(false);
   };
 
   const handleSave = () => {
@@ -248,11 +301,11 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
           </div>
 
           {/* AI Suggestions Button */}
-          <button
-            onClick={handleGetAISuggestions}
-            disabled={aiMutation.isPending}
-            className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 text-white py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
-          >
+        <button
+          onClick={handleGetAISuggestions}
+          disabled={aiMutation.isPending}
+          className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 text-white py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
+        >
           {aiMutation.isPending ? (
             <>
               <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
@@ -268,13 +321,16 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
             </>
           )}
         </button>
+        <div className="mt-2 text-xs text-gray-400">
+          Using AI model: {aiProvider} (configured default). Please review suggestions before saving.
+        </div>
 
         {/* Display AI Suggestions */}
-        {showSuggestions && aiSuggestions && !aiSuggestions.error && (
+        {showSuggestionPanel && effectiveSuggestion && !effectiveSuggestion.error && (
           <div className="mt-3 p-3 bg-purple-900/20 border border-purple-600/30 rounded-lg">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium text-purple-300">
-                AI Suggestions (Confidence: {(aiSuggestions.confidence * 100).toFixed(0)}%)
+                AI Suggestions (Confidence: {(effectiveSuggestion.confidence * 100).toFixed(0)}%)
               </span>
               <button
                 onClick={applyAllSuggestions}
@@ -283,31 +339,34 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
                 Apply All
               </button>
             </div>
+            <div className="text-xs text-gray-400 mb-2">
+              Click any attribute to apply it, or use Apply All for all five.
+            </div>
 
             <div className="space-y-2">
               {/* Visual suggestions */}
               <div className="text-xs text-gray-400">Visual:</div>
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() => applyAISuggestion('color', aiSuggestions.visual.color)}
+                  onClick={() => applyAISuggestion('color', effectiveSuggestion.visual.color)}
                   className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
                   title="Click to apply"
                 >
-                  color: <span className="text-purple-300">{aiSuggestions.visual.color}</span>
+                  color: <span className="text-purple-300">{effectiveSuggestion.visual.color}</span>
                 </button>
                 <button
-                  onClick={() => applyAISuggestion('texture', aiSuggestions.visual.texture)}
+                  onClick={() => applyAISuggestion('texture', effectiveSuggestion.visual.texture)}
                   className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
                   title="Click to apply"
                 >
-                  texture: <span className="text-purple-300">{aiSuggestions.visual.texture}</span>
+                  texture: <span className="text-purple-300">{effectiveSuggestion.visual.texture}</span>
                 </button>
                 <button
-                  onClick={() => applyAISuggestion('material', aiSuggestions.visual.material)}
+                  onClick={() => applyAISuggestion('material', effectiveSuggestion.visual.material)}
                   className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
                   title="Click to apply"
                 >
-                  material: <span className="text-purple-300">{aiSuggestions.visual.material}</span>
+                  material: <span className="text-purple-300">{effectiveSuggestion.visual.material}</span>
                 </button>
               </div>
 
@@ -315,42 +374,57 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
               <div className="text-xs text-gray-400">Physical:</div>
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() => applyAISuggestion('size', aiSuggestions.physical.size)}
+                  onClick={() => applyAISuggestion('size', effectiveSuggestion.physical.size)}
                   className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
                   title="Click to apply"
                 >
-                  size: <span className="text-purple-300">{aiSuggestions.physical.size}</span>
+                  size: <span className="text-purple-300">{effectiveSuggestion.physical.size}</span>
                 </button>
                 <button
-                  onClick={() => applyAISuggestion('shape', aiSuggestions.physical.shape)}
+                  onClick={() => applyAISuggestion('shape', effectiveSuggestion.physical.shape)}
                   className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
                   title="Click to apply"
                 >
-                  shape: <span className="text-purple-300">{aiSuggestions.physical.shape}</span>
+                  shape: <span className="text-purple-300">{effectiveSuggestion.physical.shape}</span>
                 </button>
               </div>
             </div>
           </div>
         )}
 
+        {showSuggestionPanel && effectiveSuggestion && !effectiveSuggestion.error && (
+          <div className="mt-2 text-xs text-gray-400 flex items-center gap-2">
+            <span>
+              AI frame: {storedSuggestionFrame ?? effectiveSuggestion.frame_idx}
+              {storedSuggestionSource === 'bulk' ? ' (largest bbox)' : ''}
+            </span>
+            <button
+              onClick={() => setCurrentFrame(storedSuggestionFrame ?? effectiveSuggestion.frame_idx)}
+              className="text-xs text-purple-300 hover:text-purple-200"
+            >
+              Jump
+            </button>
+          </div>
+        )}
+
         {/* Error message */}
-        {aiSuggestions?.error && (
+        {(effectiveSuggestion?.error || storedSuggestionStatus === 'error') && (
           <div className="mt-2 p-2 bg-red-900/20 border border-red-600/30 rounded text-xs text-red-400">
-            Error: {aiSuggestions.error}
+            Error: {effectiveSuggestion?.error || 'Failed to get AI suggestions'}
           </div>
         )}
       </div>
 
       {/* Visual Attributes */}
       <div className="space-y-2">
-        <div className="text-gray-400 text-xs uppercase">Visual Attributes</div>
+        <div className="text-gray-400 text-sm uppercase">Visual Attributes</div>
 
         <div>
-          <label className="text-gray-500 text-xs block mb-1">Color</label>
+          <label className="text-gray-500 text-sm block mb-1">Color</label>
           <select
             value={color}
             onChange={(e) => setColor(e.target.value)}
-            className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+            className="w-full bg-gray-700 text-white rounded p-2 text-base"
           >
             {COLOR_VALUES.map((c) => (
               <option key={c} value={c}>
@@ -364,11 +438,11 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
         </div>
 
         <div>
-          <label className="text-gray-500 text-xs block mb-1">Texture</label>
+          <label className="text-gray-500 text-sm block mb-1">Texture</label>
           <select
             value={texture}
             onChange={(e) => setTexture(e.target.value)}
-            className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+            className="w-full bg-gray-700 text-white rounded p-2 text-base"
           >
             {TEXTURE_VALUES.map((t) => (
               <option key={t} value={t}>
@@ -382,11 +456,11 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
         </div>
 
         <div>
-          <label className="text-gray-500 text-xs block mb-1">Material</label>
+          <label className="text-gray-500 text-sm block mb-1">Material</label>
           <select
             value={material}
             onChange={(e) => setMaterial(e.target.value)}
-            className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+            className="w-full bg-gray-700 text-white rounded p-2 text-base"
           >
             {MATERIAL_VALUES.map((m) => (
               <option key={m} value={m}>
@@ -402,14 +476,14 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
 
       {/* Physical Attributes */}
       <div className="space-y-2">
-        <div className="text-gray-400 text-xs uppercase">Physical Attributes</div>
+        <div className="text-gray-400 text-sm uppercase">Physical Attributes</div>
 
         <div>
-          <label className="text-gray-500 text-xs block mb-1">Size</label>
+          <label className="text-gray-500 text-sm block mb-1">Size</label>
           <select
             value={size}
             onChange={(e) => setSize(e.target.value)}
-            className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+            className="w-full bg-gray-700 text-white rounded p-2 text-base"
           >
             {SIZE_VALUES.map((s) => (
               <option key={s} value={s}>
@@ -423,11 +497,11 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
         </div>
 
         <div>
-          <label className="text-gray-500 text-xs block mb-1">Shape</label>
+          <label className="text-gray-500 text-sm block mb-1">Shape</label>
           <select
             value={shape}
             onChange={(e) => setShape(e.target.value)}
-            className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+            className="w-full bg-gray-700 text-white rounded p-2 text-base"
           >
             {SHAPE_VALUES.map((s) => (
               <option key={s} value={s}>
@@ -443,13 +517,13 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
 
       {/* Node Type */}
       <div className="space-y-2">
-        <div className="text-gray-400 text-xs uppercase">Node Type</div>
+        <div className="text-gray-400 text-sm uppercase">Node Type</div>
         <div>
-          <label className="text-gray-500 text-xs block mb-1">Static / Dynamic</label>
+          <label className="text-gray-500 text-sm block mb-1">Static / Dynamic</label>
           <select
             value={isStatic ? 'static' : 'dynamic'}
             onChange={(e) => setIsStatic(e.target.value === 'static')}
-            className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+            className="w-full bg-gray-700 text-white rounded p-2 text-base"
           >
             <option value="static">Static</option>
             <option value="dynamic">Dynamic</option>
@@ -459,12 +533,28 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
 
       {/* Action buttons */}
       <div className="flex gap-2">
+        {showSuggestionPanel && effectiveSuggestion && !effectiveSuggestion.error && (
+          <button
+            onClick={applyAllAndSave}
+            className="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-2 rounded font-semibold"
+          >
+            Apply All AI & Save
+          </button>
+        )}
         <button
           onClick={handleSave}
           className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded font-semibold"
         >
           Save Changes
         </button>
+        {(storedSuggestion || aiSuggestions) && (
+          <button
+            onClick={handleDismissSuggestions}
+            className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded font-semibold"
+          >
+            Dismiss AI Suggestions
+          </button>
+        )}
         <button
           onClick={onCancel}
           className="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-2 rounded font-semibold"

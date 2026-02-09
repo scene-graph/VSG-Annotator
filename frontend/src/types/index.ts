@@ -62,6 +62,7 @@ export interface Edge {
   validation_reasoning_round1: string;
   validation_reasoning_round2: string;
   time_period: TimePeriod;
+  time_periods?: TimePeriod[];
   attributes?: MotionAttributes;
   has_revision?: boolean;
   revision_action?: string;
@@ -116,6 +117,7 @@ export interface AnnotationModify {
   user_id: number;
   new_predicate?: string;
   new_time_period?: TimePeriod;
+  new_time_periods?: TimePeriod[];
   new_attributes?: MotionAttributes;
   new_source?: string | string[];
   new_target?: string | string[];
@@ -130,6 +132,7 @@ export interface AnnotationCreate {
   target: string | string[];
   predicate: string;
   time_period: TimePeriod;
+  time_periods?: TimePeriod[];
   attributes?: MotionAttributes;
   notes?: string;
 }
@@ -146,6 +149,8 @@ export interface Revision {
   new_predicate?: string;
   original_time_period?: TimePeriod;
   new_time_period?: TimePeriod;
+  original_time_periods?: TimePeriod[];
+  new_time_periods?: TimePeriod[];
   original_attributes?: MotionAttributes;
   new_attributes?: MotionAttributes;
   review_notes?: string;
@@ -246,6 +251,7 @@ export interface NodeModify {
   user_id: number;
   new_visual_attributes?: NodeVisualAttributes;
   new_physical_attributes?: NodePhysicalAttributes;
+  new_is_static?: boolean;
   notes?: string;
 }
 

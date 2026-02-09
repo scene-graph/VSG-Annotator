@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import type { Node, Edge, NodeVisualAttributes, NodePhysicalAttributes } from '../../types';
-import { useAppStore, useSelectedNode, useEdges, useCurrentUser, useNodes } from '../../store';
+import { useAppStore, useSelectedNode, useEdges, useCurrentUser, useNodes, useAiSuggestionFrameByNode, useAiSuggestionStatusByNode } from '../../store';
 import { useModifyNode } from '../../hooks/useVideo';
 import { NodeEditor } from './NodeEditor';
 import clsx from 'clsx';
@@ -37,8 +37,11 @@ export function NodeReview({ videoId }: NodeReviewProps) {
   const nodes = useNodes();
   const setNodes = useAppStore((state) => state.setNodes);
   const currentUser = useCurrentUser();
+  const currentFrame = useAppStore((state) => state.currentFrame);
+  const aiSuggestionFrameByNode = useAiSuggestionFrameByNode();
+  const aiSuggestionStatusByNode = useAiSuggestionStatusByNode();
 
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(true);
   const modifyMutation = useModifyNode();
 
   // Find related edges where this node is source OR target
@@ -52,10 +55,28 @@ export function NodeReview({ videoId }: NodeReviewProps) {
     });
   }, [selectedNode, edges]);
 
+  const [lastAutoJumpNodeId, setLastAutoJumpNodeId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedNode) return;
+    const selectedFrame = aiSuggestionFrameByNode[selectedNode.node_id];
+    if (selectedFrame !== undefined && lastAutoJumpNodeId !== selectedNode.node_id) {
+      setCurrentFrame(selectedFrame);
+      setLastAutoJumpNodeId(selectedNode.node_id);
+    }
+  }, [selectedNode, aiSuggestionFrameByNode, lastAutoJumpNodeId, setCurrentFrame]);
+
+  useEffect(() => {
+    if (selectedNode) {
+      setIsEditing(true);
+    }
+  }, [selectedNode]);
+
   // Handle saving node attribute changes
   const handleSaveChanges = async (changes: {
     visual?: NodeVisualAttributes;
     physical?: NodePhysicalAttributes;
+    is_static?: boolean;
   }) => {
     if (!currentUser || !selectedNode) return;
 
@@ -66,11 +87,13 @@ export function NodeReview({ videoId }: NodeReviewProps) {
         user_id: currentUser.id,
         new_visual_attributes: changes.visual,
         new_physical_attributes: changes.physical,
+        new_is_static: changes.is_static,
       });
 
       // Optimistic update: update the node in the store
       const updatedNode: Node = {
         ...selectedNode,
+        is_static: changes.is_static ?? selectedNode.is_static,
         attributes: {
           visual: changes.visual || selectedNode.attributes.visual,
           physical: changes.physical || selectedNode.attributes.physical,
@@ -89,8 +112,13 @@ export function NodeReview({ videoId }: NodeReviewProps) {
 
   if (!selectedNode) {
     return (
-      <div className="bg-gray-800 rounded-lg p-4 h-full flex items-center justify-center">
-        <p className="text-gray-400">Select a node to review</p>
+      <div className="bg-gray-800 rounded-lg p-4 h-full">
+        <div className="flex items-center justify-between mb-4">
+          <span className="text-white text-sm font-semibold">Nodes</span>
+        </div>
+        <div className="flex items-center justify-center h-full">
+          <p className="text-gray-400">Select a node to review</p>
+        </div>
       </div>
     );
   }
@@ -98,12 +126,17 @@ export function NodeReview({ videoId }: NodeReviewProps) {
   const range = getTrackletRange(selectedNode);
   const nodeTypeColor = selectedNode.is_static ? COLORS.static : COLORS.dynamic;
   const nodeTypeBgColor = selectedNode.is_static ? 'bg-gray-500' : 'bg-orange-500';
+  const selectedNodeAiStatus = aiSuggestionStatusByNode[selectedNode.node_id] ?? 'idle';
 
   // Handle clicking a related edge
   const handleEdgeClick = (edge: Edge) => {
     setSelectedEdge(edge);
     // Jump to the start of the edge
-    setCurrentFrame(edge.time_period.start_frame);
+    const edgePeriods = edge.time_periods && edge.time_periods.length > 0
+      ? edge.time_periods
+      : [edge.time_period];
+    const startFrame = edgePeriods[0]?.start_frame ?? edge.time_period.start_frame;
+    setCurrentFrame(startFrame);
   };
 
   // Determine role of selected node in an edge
@@ -126,6 +159,18 @@ export function NodeReview({ videoId }: NodeReviewProps) {
             {selectedNode.is_static ? 'static' : 'dynamic'}
           </span>
           <span className="text-white font-mono text-sm">{selectedNode.node_id}</span>
+          {selectedNodeAiStatus !== 'idle' && (
+            <span
+              className={clsx(
+                'px-2 py-0.5 rounded text-xs',
+                selectedNodeAiStatus === 'done' && 'bg-green-500/20 text-green-300',
+                selectedNodeAiStatus === 'pending' && 'bg-yellow-500/20 text-yellow-300',
+                selectedNodeAiStatus === 'error' && 'bg-red-500/20 text-red-300'
+              )}
+            >
+              AI: {selectedNodeAiStatus}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {!isEditing && currentUser && (
@@ -189,6 +234,7 @@ export function NodeReview({ videoId }: NodeReviewProps) {
             <div className="text-gray-400 text-xs uppercase mb-2">Edit Attributes</div>
             <NodeEditor
               node={selectedNode}
+              videoId={videoId}
               onSave={handleSaveChanges}
               onCancel={() => setIsEditing(false)}
             />
@@ -201,17 +247,17 @@ export function NodeReview({ videoId }: NodeReviewProps) {
                 <div className="text-gray-400 text-xs uppercase mb-2">Visual Attributes</div>
                 <div className="flex flex-wrap gap-2">
                   {selectedNode.attributes.visual.color && (
-                    <span className="px-2 py-1 rounded bg-blue-500/20 text-blue-400 text-sm">
+                    <span className="px-2 py-1 rounded bg-blue-500/20 text-blue-300 text-base">
                       {selectedNode.attributes.visual.color}
                     </span>
                   )}
                   {selectedNode.attributes.visual.texture && (
-                    <span className="px-2 py-1 rounded bg-green-500/20 text-green-400 text-sm">
+                    <span className="px-2 py-1 rounded bg-green-500/20 text-green-300 text-base">
                       {selectedNode.attributes.visual.texture}
                     </span>
                   )}
                   {selectedNode.attributes.visual.material && (
-                    <span className="px-2 py-1 rounded bg-purple-500/20 text-purple-400 text-sm">
+                    <span className="px-2 py-1 rounded bg-purple-500/20 text-purple-300 text-base">
                       {selectedNode.attributes.visual.material}
                     </span>
                   )}
@@ -225,12 +271,12 @@ export function NodeReview({ videoId }: NodeReviewProps) {
                 <div className="text-gray-400 text-xs uppercase mb-2">Physical Attributes</div>
                 <div className="flex flex-wrap gap-2">
                   {selectedNode.attributes.physical.size && (
-                    <span className="px-2 py-1 rounded bg-yellow-500/20 text-yellow-400 text-sm">
+                    <span className="px-2 py-1 rounded bg-yellow-500/20 text-yellow-300 text-base">
                       {selectedNode.attributes.physical.size}
                     </span>
                   )}
                   {selectedNode.attributes.physical.shape && (
-                    <span className="px-2 py-1 rounded bg-pink-500/20 text-pink-400 text-sm">
+                    <span className="px-2 py-1 rounded bg-pink-500/20 text-pink-300 text-base">
                       {selectedNode.attributes.physical.shape}
                     </span>
                   )}
@@ -296,7 +342,12 @@ export function NodeReview({ videoId }: NodeReviewProps) {
                       <span style={{ color: '#ff00d4' }}>{targetCategories.join(', ')}</span>
                     </div>
                     <div className="text-xs text-gray-400 mt-1">
-                      Frames {edge.time_period.start_frame}-{edge.time_period.end_frame}
+                      Frames {(edge.time_periods && edge.time_periods.length > 0
+                        ? edge.time_periods
+                        : [edge.time_period]
+                      )
+                        .map((tp) => `${tp.start_frame}-${tp.end_frame}`)
+                        .join(', ')}
                     </div>
                   </div>
                 );

@@ -77,6 +77,12 @@ class AnnotationService:
         # Record the modification
         revision = await self.tracker.record_modify(annotation, edge)
 
+        time_periods = None
+        if annotation.new_time_periods is not None:
+            time_periods = [tp.model_dump() for tp in annotation.new_time_periods]
+        elif annotation.new_time_period is not None:
+            time_periods = [annotation.new_time_period.model_dump()]
+
         return {
             "success": True,
             "revision_id": revision.id,
@@ -89,6 +95,7 @@ class AnnotationService:
                     if annotation.new_time_period
                     else None
                 ),
+                "time_periods": time_periods,
                 "attributes": (
                     annotation.new_attributes.model_dump()
                     if annotation.new_attributes
@@ -185,7 +192,11 @@ class AnnotationService:
         source = json.loads(create_rev.new_source) if create_rev.new_source else []
         target = json.loads(create_rev.new_target) if create_rev.new_target else []
         predicate = create_rev.new_predicate or ""
-        time_period_dict = create_rev.new_time_period or {"start_frame": 0, "end_frame": 0}
+        time_periods_dict = (
+            create_rev.new_time_periods
+            or ([create_rev.new_time_period] if create_rev.new_time_period else None)
+            or [{"start_frame": 0, "end_frame": 0}]
+        )
         attributes_dict = create_rev.new_attributes
 
         # Apply any subsequent modifications
@@ -198,8 +209,10 @@ class AnnotationService:
             if modify_rev:
                 if modify_rev.new_predicate:
                     predicate = modify_rev.new_predicate
-                if modify_rev.new_time_period:
-                    time_period_dict = modify_rev.new_time_period
+                if modify_rev.new_time_periods:
+                    time_periods_dict = modify_rev.new_time_periods
+                elif modify_rev.new_time_period:
+                    time_periods_dict = [modify_rev.new_time_period]
                 if modify_rev.new_attributes:
                     attributes_dict = modify_rev.new_attributes
                 if modify_rev.new_source:
@@ -208,7 +221,8 @@ class AnnotationService:
                     target = json.loads(modify_rev.new_target)
 
         # Build and return EdgeResponse
-        time_period = TimePeriod(**time_period_dict)
+        time_periods = [TimePeriod(**tp) for tp in time_periods_dict]
+        time_period = self._merge_time_periods(time_periods)
         attributes = MotionAttributes(**attributes_dict) if attributes_dict else None
 
         # Get node categories for source/target
@@ -245,6 +259,7 @@ class AnnotationService:
             validation_reasoning_round1="Human annotated",
             validation_reasoning_round2="",
             time_period=time_period,
+            time_periods=time_periods,
             attributes=attributes,
             has_revision=True,
             revision_action=latest.action,
@@ -262,9 +277,19 @@ class AnnotationService:
             "visual": node.attributes.visual.model_dump(),
             "physical": node.attributes.physical.model_dump(),
         }
+        original_is_static = node.is_static
+
+        # Prefer latest revision is_static if exists
+        latest_rev = await self.tracker.get_latest_node_revision(
+            modification.video_id, modification.node_id
+        )
+        if latest_rev and latest_rev.new_is_static is not None:
+            original_is_static = latest_rev.new_is_static
 
         # Record the modification
-        revision = await self.tracker.record_node_modify(modification, original_attributes)
+        revision = await self.tracker.record_node_modify(
+            modification, original_attributes, original_is_static
+        )
 
         return {
             "success": True,
@@ -282,6 +307,7 @@ class AnnotationService:
                     if modification.new_physical_attributes
                     else None
                 ),
+                "is_static": modification.new_is_static,
             },
         }
 
@@ -310,9 +336,15 @@ class AnnotationService:
             if latest.action == "modify":
                 if latest.new_predicate:
                     edge.predicate = latest.new_predicate
-                if latest.new_time_period:
+                if latest.new_time_periods:
+                    from backend.models.schemas import TimePeriod
+                    periods = [TimePeriod(**tp) for tp in latest.new_time_periods]
+                    edge.time_periods = periods
+                    edge.time_period = self._merge_time_periods(periods)
+                elif latest.new_time_period:
                     from backend.models.schemas import TimePeriod
                     edge.time_period = TimePeriod(**latest.new_time_period)
+                    edge.time_periods = [edge.time_period]
                 if latest.new_attributes:
                     from backend.models.schemas import MotionAttributes
                     edge.attributes = MotionAttributes(**latest.new_attributes)
@@ -359,8 +391,13 @@ class AnnotationService:
                 if rev.action == "modify":
                     if rev.new_predicate:
                         edge.predicate = rev.new_predicate
-                    if rev.new_time_period:
+                    if rev.new_time_periods:
+                        periods = [TimePeriod(**tp) for tp in rev.new_time_periods]
+                        edge.time_periods = periods
+                        edge.time_period = self._merge_time_periods(periods)
+                    elif rev.new_time_period:
                         edge.time_period = TimePeriod(**rev.new_time_period)
+                        edge.time_periods = [edge.time_period]
                     if rev.new_attributes:
                         edge.attributes = MotionAttributes(**rev.new_attributes)
 
@@ -373,6 +410,49 @@ class AnnotationService:
         created_edges = await self.get_created_edges(revision_map)
         created_edges = [e for e in created_edges if e.edge_id not in deleted_ids]
         edges.extend(created_edges)
+
+        # Reclassify edge types based on current node static/dynamic status
+        edges = await self._reclassify_edges_by_nodes(edges)
+
+        return edges
+
+    async def _reclassify_edges_by_nodes(self, edges: list[EdgeResponse]) -> list[EdgeResponse]:
+        """Update edge_type based on current node static/dynamic status."""
+        # Build node_id -> is_static map with revisions applied
+        all_nodes = list(self.vsg_loader.get_all_nodes().values())
+        node_map = {n.node_id: n.is_static for n in all_nodes}
+
+        # Apply latest node revisions to node_map
+        for node in all_nodes:
+            latest_rev = await self.tracker.get_latest_node_revision(self._video_id, node.node_id)
+            if latest_rev and latest_rev.new_is_static is not None:
+                node_map[node.node_id] = latest_rev.new_is_static
+
+        def classify_edge(edge: EdgeResponse) -> tuple[str, Optional[str]]:
+            sources = edge.source if isinstance(edge.source, list) else [edge.source]
+            targets = edge.target if isinstance(edge.target, list) else [edge.target]
+            source_static = [node_map.get(s, False) for s in sources]
+            target_static = [node_map.get(t, False) for t in targets]
+
+            # Lists: only keep fg_bg unless singleton conversion is possible
+            if len(sources) != 1 or len(targets) != 1:
+                if all(not s for s in source_static) and all(t for t in target_static):
+                    return "fg_bg", None
+                return edge.edge_type, "Edge type mismatch after node type change"
+
+            s_static = source_static[0]
+            t_static = target_static[0]
+            if s_static and t_static:
+                return "static", None
+            if not s_static and not t_static:
+                return "dynamic", None
+            return "fg_bg", None
+
+        for edge in edges:
+            new_type, note = classify_edge(edge)
+            edge.edge_type = new_type
+            if note and not edge.validation_reasoning_round2:
+                edge.validation_reasoning_round2 = note
 
         return edges
 
@@ -397,7 +477,11 @@ class AnnotationService:
             source = json.loads(rev.new_source) if rev.new_source else []
             target = json.loads(rev.new_target) if rev.new_target else []
             predicate = rev.new_predicate or ""
-            time_period_dict = rev.new_time_period or {"start_frame": 0, "end_frame": 0}
+            time_periods_dict = (
+                rev.new_time_periods
+                or ([rev.new_time_period] if rev.new_time_period else None)
+                or [{"start_frame": 0, "end_frame": 0}]
+            )
             attributes_dict = rev.new_attributes
             revision_action = "create"
 
@@ -409,8 +493,10 @@ class AnnotationService:
                     # Apply modifications
                     if latest_rev.new_predicate:
                         predicate = latest_rev.new_predicate
-                    if latest_rev.new_time_period:
-                        time_period_dict = latest_rev.new_time_period
+                    if latest_rev.new_time_periods:
+                        time_periods_dict = latest_rev.new_time_periods
+                    elif latest_rev.new_time_period:
+                        time_periods_dict = [latest_rev.new_time_period]
                     if latest_rev.new_attributes:
                         attributes_dict = latest_rev.new_attributes
                     if latest_rev.new_source:
@@ -436,7 +522,8 @@ class AnnotationService:
                 source_category = source_category[0] if len(source_category) == 1 else source_category
                 target_category = target_category[0] if len(target_category) == 1 else target_category
 
-            time_period = TimePeriod(**time_period_dict)
+            time_periods = [TimePeriod(**tp) for tp in time_periods_dict]
+            time_period = self._merge_time_periods(time_periods)
 
             attributes = None
             if rev.edge_type == "dynamic" and attributes_dict:
@@ -459,6 +546,7 @@ class AnnotationService:
                     validation_reasoning_round1="Human annotated",
                     validation_reasoning_round2="",
                     time_period=time_period,
+                    time_periods=time_periods,
                     attributes=attributes,
                     has_revision=True,
                     revision_action=revision_action,
@@ -466,3 +554,15 @@ class AnnotationService:
             )
 
         return edges
+
+    @staticmethod
+    def _merge_time_periods(periods: list) -> "TimePeriod":
+        """Compute a union TimePeriod from a list."""
+        from backend.models.schemas import TimePeriod
+
+        if not periods:
+            return TimePeriod(start_frame=0, end_frame=0)
+        return TimePeriod(
+            start_frame=min(p.start_frame for p in periods),
+            end_frame=max(p.end_frame for p in periods),
+        )

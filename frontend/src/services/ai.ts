@@ -7,6 +7,8 @@ export interface AttributeSuggestionRequest {
   node_id: string;
   frame_idx: number;
   debug?: boolean;
+  provider?: 'kimi' | 'openai' | 'gemini';
+  model?: string;
 }
 
 export interface AttributeSuggestionResponse {

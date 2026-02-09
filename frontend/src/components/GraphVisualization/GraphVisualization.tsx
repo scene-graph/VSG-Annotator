@@ -36,6 +36,11 @@ export function GraphVisualization({ nodes, edges, width = 400, height = 300 }: 
 
   // Filter edges active at current frame
   const activeEdges = edges.filter((edge) => {
+    if (edge.time_periods && edge.time_periods.length > 0) {
+      return edge.time_periods.some(
+        (tp) => tp.start_frame <= currentFrame && currentFrame <= tp.end_frame
+      );
+    }
     return edge.time_period.start_frame <= currentFrame && currentFrame <= edge.time_period.end_frame;
   });
 

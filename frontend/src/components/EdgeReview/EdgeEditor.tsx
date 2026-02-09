@@ -7,7 +7,7 @@ interface EdgeEditorProps {
   videoId: string;
   onSave: (changes: {
     predicate?: string;
-    time_period?: TimePeriod;
+    time_periods?: TimePeriod[];
     attributes?: MotionAttributes;
   }) => void;
   onCancel: () => void;
@@ -19,21 +19,33 @@ const TRAJECTORY_VALUES = ['stable', 'straight', 'curved', 'arc', 'circular', 'z
 
 export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps) {
   const [predicate, setPredicate] = useState(edge.predicate);
-  const [startFrame, setStartFrame] = useState(edge.time_period.start_frame);
-  const [endFrame, setEndFrame] = useState(edge.time_period.end_frame);
+  const [segments, setSegments] = useState<TimePeriod[]>([]);
   const [velocity, setVelocity] = useState(edge.attributes?.velocity || 'moderate');
   const [direction, setDirection] = useState(edge.attributes?.direction || 'none');
   const [trajectory, setTrajectory] = useState(edge.attributes?.trajectory || 'curved');
 
+  const normalizeSegments = (list: TimePeriod[]) => {
+    const safe = list.length > 0 ? list : [edge.time_period];
+    return [...safe]
+      .map((seg) => ({
+        start_frame: seg.start_frame,
+        end_frame: seg.end_frame,
+      }))
+      .sort((a, b) => a.start_frame - b.start_frame);
+  };
+
   // Sync local state when edge prop changes (fixes stale state after modifications)
   useEffect(() => {
     setPredicate(edge.predicate);
-    setStartFrame(edge.time_period.start_frame);
-    setEndFrame(edge.time_period.end_frame);
+    const initialSegments = edge.time_periods && edge.time_periods.length > 0
+      ? edge.time_periods
+      : [edge.time_period];
+    setSegments(normalizeSegments(initialSegments));
     setVelocity(edge.attributes?.velocity || 'moderate');
     setDirection(edge.attributes?.direction || 'none');
     setTrajectory(edge.attributes?.trajectory || 'curved');
   }, [edge.edge_id, edge.predicate, edge.time_period.start_frame, edge.time_period.end_frame,
+      edge.time_periods,
       edge.attributes?.velocity, edge.attributes?.direction, edge.attributes?.trajectory]);
 
   const { data: predicatesData } = usePredicates(videoId, edge.edge_type);
@@ -42,7 +54,7 @@ export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps)
   const handleSave = () => {
     const changes: {
       predicate?: string;
-      time_period?: TimePeriod;
+      time_periods?: TimePeriod[];
       attributes?: MotionAttributes;
     } = {};
 
@@ -50,8 +62,14 @@ export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps)
       changes.predicate = predicate;
     }
 
-    if (startFrame !== edge.time_period.start_frame || endFrame !== edge.time_period.end_frame) {
-      changes.time_period = { start_frame: startFrame, end_frame: endFrame };
+    const normalizedSegments = normalizeSegments(segments);
+    const originalSegments = normalizeSegments(
+      edge.time_periods && edge.time_periods.length > 0
+        ? edge.time_periods
+        : [edge.time_period]
+    );
+    if (JSON.stringify(normalizedSegments) !== JSON.stringify(originalSegments)) {
+      changes.time_periods = normalizedSegments;
     }
 
     if (edge.edge_type === 'dynamic') {
@@ -67,6 +85,39 @@ export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps)
     }
 
     onSave(changes);
+  };
+
+  const updateSegment = (index: number, updates: Partial<TimePeriod>) => {
+    setSegments((prev) => {
+      const next = prev.map((seg, i) => {
+        if (i !== index) return seg;
+        const updated = { ...seg, ...updates };
+        if (updated.end_frame < updated.start_frame) {
+          if (updates.start_frame !== undefined) {
+            updated.end_frame = updated.start_frame;
+          } else {
+            updated.start_frame = updated.end_frame;
+          }
+        }
+        return updated;
+      });
+      return next;
+    });
+  };
+
+  const addSegment = () => {
+    setSegments((prev) => {
+      const last = prev[prev.length - 1];
+      const start = last ? last.end_frame + 1 : 0;
+      return [...prev, { start_frame: start, end_frame: start }];
+    });
+  };
+
+  const removeSegment = (index: number) => {
+    setSegments((prev) => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((_, i) => i !== index);
+    });
   };
 
   return (
@@ -91,27 +142,49 @@ export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps)
       </div>
 
       {/* Time period */}
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label className="text-gray-400 text-xs uppercase block mb-1">Start Frame</label>
-          <input
-            type="number"
-            value={startFrame}
-            onChange={(e) => setStartFrame(Number(e.target.value))}
-            min={0}
-            className="w-full bg-gray-700 text-white rounded p-2 text-sm"
-          />
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <label className="text-gray-400 text-xs uppercase">Time Periods</label>
+          <button
+            type="button"
+            onClick={addSegment}
+            className="text-xs text-blue-300 hover:text-blue-200"
+          >
+            + Add Segment
+          </button>
         </div>
-        <div>
-          <label className="text-gray-400 text-xs uppercase block mb-1">End Frame</label>
-          <input
-            type="number"
-            value={endFrame}
-            onChange={(e) => setEndFrame(Number(e.target.value))}
-            min={startFrame}
-            className="w-full bg-gray-700 text-white rounded p-2 text-sm"
-          />
-        </div>
+        {segments.map((segment, index) => (
+          <div key={index} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
+            <div>
+              <label className="text-gray-400 text-xs uppercase block mb-1">Start</label>
+              <input
+                type="number"
+                value={segment.start_frame}
+                onChange={(e) => updateSegment(index, { start_frame: Number(e.target.value) })}
+                min={0}
+                className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-gray-400 text-xs uppercase block mb-1">End</label>
+              <input
+                type="number"
+                value={segment.end_frame}
+                onChange={(e) => updateSegment(index, { end_frame: Number(e.target.value) })}
+                min={segment.start_frame}
+                className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => removeSegment(index)}
+              disabled={segments.length <= 1}
+              className="h-9 px-2 rounded bg-gray-600 text-gray-200 hover:bg-gray-500 disabled:opacity-40"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
       </div>
 
       {/* Motion attributes (for dynamic edges) */}

@@ -44,7 +44,7 @@ class EdgeManager:
             filtered = [
                 e
                 for e in filtered
-                if e.time_period.start_frame <= params.frame <= e.time_period.end_frame
+                if self._frame_in_edge(e, params.frame)
             ]
 
         return filtered
@@ -82,7 +82,7 @@ class EdgeManager:
         return [
             e
             for e in self.edges
-            if e.time_period.start_frame <= frame <= e.time_period.end_frame
+            if self._frame_in_edge(e, frame)
         ]
 
     def get_unique_predicates(self) -> list[str]:
@@ -91,6 +91,16 @@ class EdgeManager:
         for edge in self.edges:
             predicates.add(edge.predicate)
         return sorted(predicates)
+
+    @staticmethod
+    def _frame_in_edge(edge: EdgeResponse, frame: int) -> bool:
+        """Check if a frame is within any time period for an edge."""
+        if edge.time_periods:
+            return any(
+                tp.start_frame <= frame <= tp.end_frame
+                for tp in edge.time_periods
+            )
+        return edge.time_period.start_frame <= frame <= edge.time_period.end_frame
 
     def get_stats(self) -> dict:
         """Get statistics about the edges."""

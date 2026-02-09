@@ -147,9 +147,17 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     setNotes('');
   };
 
+  const mergeTimePeriods = (periods: TimePeriod[]) => {
+    if (periods.length === 0) return { start_frame: 0, end_frame: 0 };
+    return {
+      start_frame: Math.min(...periods.map((p) => p.start_frame)),
+      end_frame: Math.max(...periods.map((p) => p.end_frame)),
+    };
+  };
+
   const handleModify = (changes: {
     predicate?: string;
-    time_period?: TimePeriod;
+    time_periods?: TimePeriod[];
     attributes?: MotionAttributes;
   }) => {
     if (!currentUser) {
@@ -157,11 +165,18 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
       return;
     }
 
+    const updatedPeriods = changes.time_periods
+      ?? (selectedEdge.time_periods && selectedEdge.time_periods.length > 0
+        ? selectedEdge.time_periods
+        : [selectedEdge.time_period]);
+    const mergedPeriod = mergeTimePeriods(updatedPeriods);
+
     // Build the updated edge FIRST
     const updatedEdge: Edge = {
       ...selectedEdge,
       predicate: changes.predicate ?? selectedEdge.predicate,
-      time_period: changes.time_period ?? selectedEdge.time_period,
+      time_period: mergedPeriod,
+      time_periods: updatedPeriods,
       attributes: changes.attributes ?? selectedEdge.attributes,
       has_revision: true,
       revision_action: 'modify',
@@ -184,7 +199,7 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
       edge_type: selectedEdge.edge_type,
       user_id: currentUser.id,
       new_predicate: changes.predicate,
-      new_time_period: changes.time_period,
+      new_time_periods: changes.time_periods,
       new_attributes: changes.attributes,
       notes: notes || undefined,
     });
@@ -297,10 +312,17 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
         <div className="bg-gray-700 rounded p-3">
           <div className="text-gray-400 text-xs uppercase mb-1">Time Period</div>
           <div className="text-white">
-            Frame {selectedEdge.time_period.start_frame} - {selectedEdge.time_period.end_frame}
-            <span className="text-gray-400 ml-2">
-              ({selectedEdge.time_period.end_frame - selectedEdge.time_period.start_frame + 1} frames)
-            </span>
+            {(selectedEdge.time_periods && selectedEdge.time_periods.length > 0
+              ? selectedEdge.time_periods
+              : [selectedEdge.time_period]
+            ).map((tp, idx) => (
+              <span key={`${tp.start_frame}-${tp.end_frame}-${idx}`} className="inline-block mr-2">
+                Frame {tp.start_frame} - {tp.end_frame}
+                <span className="text-gray-400 ml-1">
+                  ({tp.end_frame - tp.start_frame + 1} frames)
+                </span>
+              </span>
+            ))}
           </div>
         </div>
 

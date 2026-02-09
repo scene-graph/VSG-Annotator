@@ -229,6 +229,12 @@ export function useModifyNode() {
           query.queryKey[0] === 'nodes' && query.queryKey[1] === variables.video_id
       });
       queryClient.invalidateQueries({ queryKey: ['nodeHistory', variables.video_id, variables.node_id] });
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', variables.video_id] });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'edges' && query.queryKey[1] === variables.video_id
+      });
+      queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
     },
   });
 }

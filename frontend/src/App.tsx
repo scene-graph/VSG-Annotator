@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Routes, Route, Link, useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { useAppStore, useFilters, useCurrentUser, useSelectedNode, useSelectedEdge, useAnnotationMode } from './store';
+import { useAppStore, useFilters, useCurrentUser, useSelectedNode, useSelectedEdge, useAnnotationMode, useBulkAiProgress, useAiProvider, useSetAiProvider, useResetBulkAi } from './store';
 import { usersApi } from './services/api';
 import { useVideos, useVideo, useNodes, useEdges } from './hooks';
 import { VideoPlayer } from './components/VideoPlayer';
@@ -16,6 +16,8 @@ import { ImportButton } from './components/Import';
 import { SaveButton } from './components/Save';
 import clsx from 'clsx';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
+import { aiApi } from './services/ai';
+import type { Node } from './types';
 
 function VideoList() {
   const { data: videos, isLoading, error } = useVideos();
@@ -95,7 +97,7 @@ function VideoList() {
 
 // Annotation mode toggle component
 function AnnotationModeToggle() {
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(false);
   const annotationMode = useAnnotationMode();
   const setAnnotationMode = useAppStore((state) => state.setAnnotationMode);
   const selectedNode = useSelectedNode();
@@ -114,14 +116,14 @@ function AnnotationModeToggle() {
   };
 
   return (
-    <div className="bg-gray-800 rounded-lg p-3">
+    <div className="bg-gray-800 rounded-lg p-2">
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center justify-between"
       >
         <div className="flex items-center gap-2">
           <svg
-            className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+            className={`w-3.5 h-3.5 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -148,7 +150,7 @@ function AnnotationModeToggle() {
           <button
             onClick={() => handleModeChange('nodes')}
             className={clsx(
-              'flex-1 py-2 px-3 rounded text-sm font-medium transition-colors',
+              'flex-1 py-1.5 px-2 rounded text-xs font-medium transition-colors',
               annotationMode === 'nodes'
                 ? 'bg-green-600 text-white'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
@@ -159,7 +161,7 @@ function AnnotationModeToggle() {
           <button
             onClick={() => handleModeChange('edges')}
             className={clsx(
-              'flex-1 py-2 px-3 rounded text-sm font-medium transition-colors',
+              'flex-1 py-1.5 px-2 rounded text-xs font-medium transition-colors',
               annotationMode === 'edges'
                 ? 'bg-orange-600 text-white'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
@@ -185,11 +187,23 @@ function VideoAnnotation() {
   const selectedNode = useSelectedNode();
   const selectedEdge = useSelectedEdge();
   const annotationMode = useAnnotationMode();
+  const setAiSuggestion = useAppStore((state) => state.setAiSuggestion);
+  const setAiSuggestionStatus = useAppStore((state) => state.setAiSuggestionStatus);
+  const startBulkAi = useAppStore((state) => state.startBulkAi);
+  const updateBulkAiProgress = useAppStore((state) => state.updateBulkAiProgress);
+  const finishBulkAi = useAppStore((state) => state.finishBulkAi);
+  const cancelBulkAi = useAppStore((state) => state.cancelBulkAi);
+  const bulkAiProgress = useBulkAiProgress();
+  const bulkRunIdRef = useRef(0);
+  const aiProvider = useAiProvider();
+  const setAiProvider = useSetAiProvider();
+  const resetBulkAi = useResetBulkAi();
+  const [showBulkReviewPrompt, setShowBulkReviewPrompt] = useState(false);
 
   const [showMetadata, setShowMetadata] = useState(false);
 
   // Resizable right panel state
-  const [rightPanelWidth, setRightPanelWidth] = useState(384); // default w-96
+  const [rightPanelWidth, setRightPanelWidth] = useState(480);
   const isResizing = useRef(false);
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
@@ -205,8 +219,8 @@ function VideoAnnotation() {
 
       // Calculate new width based on mouse position from right edge
       const newWidth = window.innerWidth - e.clientX - 16; // 16px for padding
-      // Clamp between min (300) and max (600)
-      setRightPanelWidth(Math.min(600, Math.max(300, newWidth)));
+      // Clamp between min (300) and max (800)
+      setRightPanelWidth(Math.min(800, Math.max(300, newWidth)));
     };
 
     const handleMouseUp = () => {
@@ -236,6 +250,11 @@ function VideoAnnotation() {
   }, [video, setCurrentVideo]);
 
   useEffect(() => {
+    resetBulkAi();
+    setShowBulkReviewPrompt(false);
+  }, [videoId, resetBulkAi]);
+
+  useEffect(() => {
     if (nodesData) setNodes(nodesData);
   }, [nodesData, setNodes]);
 
@@ -254,6 +273,101 @@ function VideoAnnotation() {
       setEdges([...serverEdges, ...localCreatedEdges]);
     }
   }, [edgesData, setEdges]);
+
+  const getLargestBBoxFrame = useCallback((node: Node): number | null => {
+    const entries = Object.entries(node.bboxes_by_frame || {});
+    if (entries.length === 0) {
+      return null;
+    }
+
+    let bestFrame: number | null = null;
+    let bestArea = -1;
+
+    for (const [frameStr, bbox] of entries) {
+      const frameIdx = Number(frameStr);
+      if (Number.isNaN(frameIdx)) continue;
+      const area = bbox.width * bbox.height;
+      if (area > bestArea || (area === bestArea && (bestFrame === null || frameIdx < bestFrame))) {
+        bestArea = area;
+        bestFrame = frameIdx;
+      }
+    }
+
+    return bestFrame;
+  }, []);
+
+  const handleBulkAISuggestions = useCallback(async () => {
+    if (!video || nodes.length === 0 || bulkAiProgress.running) return;
+    bulkRunIdRef.current += 1;
+    const runId = bulkRunIdRef.current;
+    startBulkAi(nodes.length);
+    let completed = 0;
+
+    for (const node of nodes) {
+      const state = useAppStore.getState();
+      if (state.bulkAiProgress.cancelled || bulkRunIdRef.current !== runId) {
+        break;
+      }
+
+      const frameIdx = getLargestBBoxFrame(node);
+      if (frameIdx === null) {
+        setAiSuggestionStatus(node.node_id, 'error');
+        completed += 1;
+        updateBulkAiProgress(completed);
+        continue;
+      }
+
+      setAiSuggestionStatus(node.node_id, 'pending');
+      try {
+        const provider = useAppStore.getState().aiProvider;
+        const result = await aiApi.suggestAttributes({
+          video_id: video.video_id,
+          node_id: node.node_id,
+          frame_idx: frameIdx,
+          debug: false,
+          provider,
+        });
+        if (!result.error) {
+          setAiSuggestion(node.node_id, result, frameIdx, 'bulk');
+          setAiSuggestionStatus(node.node_id, 'done');
+        } else {
+          setAiSuggestionStatus(node.node_id, 'error');
+        }
+      } catch (error) {
+        setAiSuggestionStatus(node.node_id, 'error');
+      }
+
+      completed += 1;
+      updateBulkAiProgress(completed);
+    }
+
+    if (!useAppStore.getState().bulkAiProgress.cancelled && bulkRunIdRef.current === runId) {
+      finishBulkAi();
+      setShowBulkReviewPrompt(true);
+    }
+  }, [
+    video,
+    nodes,
+    bulkAiProgress.running,
+    getLargestBBoxFrame,
+    startBulkAi,
+    updateBulkAiProgress,
+    finishBulkAi,
+    setAiSuggestion,
+    setAiSuggestionStatus,
+  ]);
+
+  const handleCancelBulk = useCallback(() => {
+    bulkRunIdRef.current += 1;
+    cancelBulkAi();
+    setShowBulkReviewPrompt(false);
+  }, [cancelBulkAi]);
+
+  useEffect(() => {
+    if (bulkAiProgress.running) {
+      setShowBulkReviewPrompt(false);
+    }
+  }, [bulkAiProgress.running]);
 
   if (videoLoading) {
     return (
@@ -293,6 +407,56 @@ function VideoAnnotation() {
           )}
         </div>
         <div className="flex items-center gap-4">
+          <select
+            value={aiProvider}
+            onChange={(e) => setAiProvider(e.target.value as 'kimi' | 'openai' | 'gemini')}
+            className="bg-gray-700 text-white rounded px-2 py-1 text-sm border border-gray-600"
+          >
+            <option value="kimi">Kimi</option>
+            <option value="openai">OpenAI</option>
+            <option value="gemini">Gemini</option>
+          </select>
+          <button
+            onClick={bulkAiProgress.running ? handleCancelBulk : handleBulkAISuggestions}
+            disabled={(!video || nodes.length === 0) && !bulkAiProgress.running}
+            className={clsx(
+              'px-3 py-1.5 text-white text-sm font-semibold rounded border shadow-md transition-all',
+              bulkAiProgress.running
+                ? 'bg-gray-700 border-gray-500 hover:bg-gray-600'
+                : 'bg-purple-600 hover:bg-purple-700 border-purple-400 hover:shadow-lg',
+              (!video || nodes.length === 0) && !bulkAiProgress.running && 'bg-purple-800 border-purple-700 cursor-not-allowed'
+            )}
+          >
+            {bulkAiProgress.running ? 'Cancel AI Suggestions' : 'AI Suggest All Nodes'}
+          </button>
+          {(bulkAiProgress.running || bulkAiProgress.completed > 0) && (
+            <div className="flex items-center gap-2">
+              <div className="w-24 h-2 bg-gray-700 rounded">
+                <div
+                  className="h-2 bg-purple-400 rounded"
+                  style={{
+                    width: bulkAiProgress.total > 0
+                      ? `${Math.min(100, (bulkAiProgress.completed / bulkAiProgress.total) * 100)}%`
+                      : '0%',
+                  }}
+                />
+              </div>
+              <span className="text-xs text-gray-300">
+                {bulkAiProgress.completed}/{bulkAiProgress.total}
+              </span>
+            </div>
+          )}
+          {showBulkReviewPrompt && (
+            <div className="flex items-center gap-2 bg-green-600/20 border border-green-600/40 text-green-200 text-xs px-2 py-1 rounded">
+              AI suggestions finished — review nodes and accept/modify annotations.
+              <button
+                onClick={() => setShowBulkReviewPrompt(false)}
+                className="text-green-100 hover:text-white"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           <ImportButton videoId={video.video_id} />
           <SaveButton videoId={video.video_id} />
           <ExportButton videoId={video.video_id} />

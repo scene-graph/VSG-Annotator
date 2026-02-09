@@ -194,8 +194,34 @@ class VSGLoader:
             end_frame=tp_data.get("end_frame", self.total_frames - 1),
         )
 
+    def _parse_time_periods(self, edge_data: dict) -> list[TimePeriod]:
+        """Parse time periods list from edge data."""
+        tp_list = edge_data.get("time_periods")
+        if isinstance(tp_list, list) and tp_list:
+            return [
+                self._parse_time_period(tp)
+                for tp in tp_list
+                if isinstance(tp, dict)
+            ]
+        # Fallback to single time_period if provided
+        if "time_period" in edge_data:
+            return [self._parse_time_period(edge_data.get("time_period", {}))]
+        # Default full span
+        return [TimePeriod(start_frame=0, end_frame=self.total_frames - 1)]
+
+    def _merge_time_periods(self, periods: list[TimePeriod]) -> TimePeriod:
+        """Compute a union time period from a list."""
+        if not periods:
+            return TimePeriod(start_frame=0, end_frame=self.total_frames - 1)
+        return TimePeriod(
+            start_frame=min(p.start_frame for p in periods),
+            end_frame=max(p.end_frame for p in periods),
+        )
+
     def _parse_static_edge(self, edge_data: dict) -> EdgeResponse:
         """Parse a static edge."""
+        time_periods = self._parse_time_periods(edge_data)
+        merged = self._merge_time_periods(time_periods)
         return EdgeResponse(
             edge_id=edge_data["edge_id"],
             edge_type="static",
@@ -211,7 +237,8 @@ class VSGLoader:
             extraction_round=edge_data.get("extraction_round", 1),
             validation_reasoning_round1=edge_data.get("validation_reasoning_round1", ""),
             validation_reasoning_round2=edge_data.get("validation_reasoning_round2", ""),
-            time_period=self._parse_time_period(edge_data.get("time_period", {})),
+            time_period=merged,
+            time_periods=time_periods,
             attributes=None,
         )
 
@@ -223,7 +250,8 @@ class VSGLoader:
             direction=attrs_data.get("direction", "none"),
             trajectory=attrs_data.get("trajectory", "curved"),
         )
-
+        time_periods = self._parse_time_periods(edge_data)
+        merged = self._merge_time_periods(time_periods)
         return EdgeResponse(
             edge_id=edge_data["edge_id"],
             edge_type="dynamic",
@@ -239,12 +267,15 @@ class VSGLoader:
             extraction_round=edge_data.get("extraction_round", 1),
             validation_reasoning_round1=edge_data.get("validation_reasoning_round1", ""),
             validation_reasoning_round2=edge_data.get("validation_reasoning_round2", ""),
-            time_period=self._parse_time_period(edge_data.get("time_period", {})),
+            time_period=merged,
+            time_periods=time_periods,
             attributes=attrs,
         )
 
     def _parse_fg_bg_edge(self, edge_data: dict) -> EdgeResponse:
         """Parse a foreground-background edge with group-level support."""
+        time_periods = self._parse_time_periods(edge_data)
+        merged = self._merge_time_periods(time_periods)
         return EdgeResponse(
             edge_id=edge_data["edge_id"],
             edge_type="fg_bg",
@@ -260,7 +291,8 @@ class VSGLoader:
             extraction_round=edge_data.get("extraction_round", 1),
             validation_reasoning_round1=edge_data.get("validation_reasoning_round1", ""),
             validation_reasoning_round2=edge_data.get("validation_reasoning_round2", ""),
-            time_period=self._parse_time_period(edge_data.get("time_period", {})),
+            time_period=merged,
+            time_periods=time_periods,
             attributes=None,
         )
 

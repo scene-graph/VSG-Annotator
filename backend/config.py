@@ -36,9 +36,34 @@ class Settings(BaseSettings):
     default_page_size: int = 50
     max_page_size: int = 200
 
+    # Kimi AI Configuration
+    kimi_api_key: str = Field("", alias="KIMI_API_KEY")
+    nvidia_api_key: str = Field("", alias="NVIDIA_API_KEY")
+    kimi_api_url: str = "https://integrate.api.nvidia.com/v1/chat/completions"
+    kimi_model: str = "moonshotai/kimi-k2.5"
+    kimi_max_tokens: int = 1024
+    kimi_temperature: float = 0.6
+    kimi_enable_thinking: bool = False
+
+    # Multi-provider AI Configuration
+    ai_default_provider: str = "kimi"
+
+    openai_api_key: str = ""
+    openai_api_url: str = "https://api.openai.com/v1/chat/completions"
+    openai_model: str = "gpt-5.2"
+    openai_max_tokens: int = 1024
+    openai_temperature: float = 0.6
+
+    gemini_api_key: str = ""
+    gemini_api_url: str = "https://generativelanguage.googleapis.com/v1beta/models"
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_max_tokens: int = 2048
+    gemini_temperature: float = 0.6
+
     class Config:
         env_file = str(_ENV_FILE)
         env_file_encoding = "utf-8"
+        populate_by_name = True
 
 
 settings = Settings()

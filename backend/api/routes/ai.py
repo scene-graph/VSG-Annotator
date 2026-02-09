@@ -23,6 +23,8 @@ class AttributeSuggestionRequest(BaseModel):
     node_id: str = Field(..., description="Node identifier")
     frame_idx: int = Field(..., ge=0, description="Frame index")
     debug: bool = Field(False, description="Enable debug mode")
+    provider: Optional[str] = Field(None, description="AI provider (kimi, openai, gemini)")
+    model: Optional[str] = Field(None, description="Override model name")
 
 
 class AttributeSuggestionResponse(BaseModel):
@@ -65,6 +67,14 @@ async def get_attribute_suggestions(
         HTTPException: If video, node, or frame not found
     """
     try:
+        logger.info(
+            "AI suggestion request: video=%s node=%s frame=%s provider=%s model=%s",
+            request.video_id,
+            request.node_id,
+            request.frame_idx,
+            request.provider or settings.ai_default_provider,
+            request.model or "default"
+        )
         # Verify video exists in database
         result = await db.execute(select(Video).where(Video.video_id == request.video_id))
         video = result.scalar_one_or_none()
@@ -136,6 +146,8 @@ async def get_attribute_suggestions(
             node=node,
             frame_idx=request.frame_idx,
             frames_path=frames_path,
+            provider=request.provider,
+            model=request.model,
             debug_mode=request.debug
         )
 
@@ -183,5 +195,20 @@ async def check_ai_health() -> dict:
         "api_configured": bool(settings.nvidia_api_key),
         "model": settings.kimi_model,
         "temperature": settings.kimi_temperature,
-        "thinking_enabled": settings.kimi_enable_thinking
+        "thinking_enabled": settings.kimi_enable_thinking,
+        "default_provider": settings.ai_default_provider,
+        "providers": {
+            "kimi": {
+                "enabled": bool(settings.nvidia_api_key),
+                "model": settings.kimi_model
+            },
+            "openai": {
+                "enabled": bool(settings.openai_api_key),
+                "model": settings.openai_model
+            },
+            "gemini": {
+                "enabled": bool(settings.gemini_api_key),
+                "model": settings.gemini_model
+            }
+        }
     }

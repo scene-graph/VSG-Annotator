@@ -9,6 +9,7 @@ interface AIDebugModalProps {
       video_id: string;
       node_id: string;
       frame_idx: number;
+      provider?: string;
       bbox?: { left?: number; top?: number; width: number; height: number; x?: number; y?: number };
       frame_path?: string;
       node_visible_range?: string;
@@ -105,6 +106,14 @@ export function AIDebugModal({ isOpen, onClose, debugInfo }: AIDebugModalProps) 
                   )}
                 </span>
               </div>
+              {debugInfo.request.provider && (
+                <div className="flex">
+                  <span className="text-gray-500 w-32">Provider:</span>
+                  <span className="text-white font-mono text-xs">
+                    {debugInfo.request.provider}
+                  </span>
+                </div>
+              )}
               {debugInfo.request.node_visible_range && (
                 <div className="flex">
                   <span className="text-gray-500 w-32">Node Visible:</span>

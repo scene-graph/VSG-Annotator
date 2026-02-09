@@ -1,9 +1,11 @@
 import { create } from 'zustand';
 import type { Edge, EdgeFilters, EdgeType, Node, User, VideoDetail } from '../types';
+import type { AttributeSuggestionResponse } from '../services/ai';
 
 // Edge drag state for sharing between EdgeTimeline and TrackletTimeline
 export interface EdgeDragState {
   edgeId: string;
+  segmentIndex: number;
   handle: 'left' | 'right';
   currentStartFrame: number;
   currentEndFrame: number;
@@ -88,6 +90,28 @@ interface AppState {
   proceedToTarget: () => void;
   proceedToConfigure: () => void;
   setEdgeCreationType: (edgeType: EdgeType | null) => void;
+
+  // AI suggestions (node attributes)
+  aiProvider: 'kimi' | 'openai' | 'gemini';
+  setAiProvider: (provider: 'kimi' | 'openai' | 'gemini') => void;
+  aiSuggestionsByNode: Record<string, AttributeSuggestionResponse>;
+  aiSuggestionStatusByNode: Record<string, 'idle' | 'pending' | 'done' | 'error'>;
+  aiSuggestionFrameByNode: Record<string, number>;
+  aiSuggestionSourceByNode: Record<string, 'bulk' | 'single'>;
+  bulkAiProgress: { total: number; completed: number; running: boolean; cancelled: boolean };
+  setAiSuggestion: (
+    nodeId: string,
+    suggestion: AttributeSuggestionResponse,
+    frameIdx: number,
+    source: 'bulk' | 'single'
+  ) => void;
+  setAiSuggestionStatus: (nodeId: string, status: 'idle' | 'pending' | 'done' | 'error') => void;
+  clearAiSuggestion: (nodeId: string) => void;
+  startBulkAi: (total: number) => void;
+  updateBulkAiProgress: (completed: number) => void;
+  finishBulkAi: () => void;
+  cancelBulkAi: () => void;
+  resetBulkAi: () => void;
 }
 
 const initialFilters: EdgeFilters = {};
@@ -95,11 +119,24 @@ const initialFilters: EdgeFilters = {};
 export const useAppStore = create<AppState>((set) => ({
   // Current video
   currentVideo: null,
-  setCurrentVideo: (video) => set({ currentVideo: video }),
+  setCurrentVideo: (video) => set({
+    currentVideo: video,
+    currentFrame: 0  // Reset frame when switching videos
+  }),
 
   // Current frame
   currentFrame: 0,
-  setCurrentFrame: (frame) => set({ currentFrame: frame }),
+  setCurrentFrame: (frame) => set((state) => {
+    // Validate frame is within bounds
+    const video = state.currentVideo;
+    if (video && video.total_frames) {
+      // Clamp frame to valid range [0, totalFrames - 1]
+      const validFrame = Math.max(0, Math.min(frame, video.total_frames - 1));
+      return { currentFrame: validFrame };
+    }
+    // If no video or total_frames, just ensure non-negative
+    return { currentFrame: Math.max(0, frame) };
+  }),
 
   // Nodes
   nodes: [],
@@ -247,6 +284,58 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       edgeCreation: { ...state.edgeCreation, edgeType },
     })),
+
+  // AI suggestions
+  aiProvider: 'kimi',
+  setAiProvider: (provider) => set({ aiProvider: provider }),
+  aiSuggestionsByNode: {},
+  aiSuggestionStatusByNode: {},
+  aiSuggestionFrameByNode: {},
+  aiSuggestionSourceByNode: {},
+  bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+  setAiSuggestion: (nodeId, suggestion, frameIdx, source) =>
+    set((state) => ({
+      aiSuggestionsByNode: { ...state.aiSuggestionsByNode, [nodeId]: suggestion },
+      aiSuggestionFrameByNode: { ...state.aiSuggestionFrameByNode, [nodeId]: frameIdx },
+      aiSuggestionSourceByNode: { ...state.aiSuggestionSourceByNode, [nodeId]: source },
+      aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: 'done' },
+    })),
+  setAiSuggestionStatus: (nodeId, status) =>
+    set((state) => ({
+      aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: status },
+    })),
+  clearAiSuggestion: (nodeId) =>
+    set((state) => {
+      const { [nodeId]: _removedSuggestion, ...remainingSuggestions } = state.aiSuggestionsByNode;
+      const { [nodeId]: _removedFrame, ...remainingFrames } = state.aiSuggestionFrameByNode;
+      const { [nodeId]: _removedSource, ...remainingSources } = state.aiSuggestionSourceByNode;
+      return {
+        aiSuggestionsByNode: remainingSuggestions,
+        aiSuggestionFrameByNode: remainingFrames,
+        aiSuggestionSourceByNode: remainingSources,
+        aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: 'idle' },
+      };
+    }),
+  startBulkAi: (total) =>
+    set({
+      bulkAiProgress: { total, completed: 0, running: true, cancelled: false },
+    }),
+  updateBulkAiProgress: (completed) =>
+    set((state) => ({
+      bulkAiProgress: { ...state.bulkAiProgress, completed },
+    })),
+  finishBulkAi: () =>
+    set((state) => ({
+      bulkAiProgress: { ...state.bulkAiProgress, running: false },
+    })),
+  cancelBulkAi: () =>
+    set((state) => ({
+      bulkAiProgress: { ...state.bulkAiProgress, cancelled: true, running: false },
+    })),
+  resetBulkAi: () =>
+    set({
+      bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+    }),
 }));
 
 // Selectors
@@ -263,3 +352,11 @@ export const useSourceNodes = () => useAppStore((state) => state.sourceNodes);
 export const useTargetNodes = () => useAppStore((state) => state.targetNodes);
 export const useEdgeDragState = () => useAppStore((state) => state.edgeDragState);
 export const useEdgeCreation = () => useAppStore((state) => state.edgeCreation);
+export const useAiSuggestionsByNode = () => useAppStore((state) => state.aiSuggestionsByNode);
+export const useAiSuggestionStatusByNode = () => useAppStore((state) => state.aiSuggestionStatusByNode);
+export const useAiSuggestionFrameByNode = () => useAppStore((state) => state.aiSuggestionFrameByNode);
+export const useAiSuggestionSourceByNode = () => useAppStore((state) => state.aiSuggestionSourceByNode);
+export const useBulkAiProgress = () => useAppStore((state) => state.bulkAiProgress);
+export const useAiProvider = () => useAppStore((state) => state.aiProvider);
+export const useSetAiProvider = () => useAppStore((state) => state.setAiProvider);
+export const useResetBulkAi = () => useAppStore((state) => state.resetBulkAi);

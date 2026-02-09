@@ -108,6 +108,7 @@ class EdgeBase(BaseModel):
     validation_reasoning_round1: str = ""
     validation_reasoning_round2: str = ""
     time_period: TimePeriod
+    time_periods: list[TimePeriod] = Field(default_factory=list)
 
 
 class StaticEdge(EdgeBase):
@@ -159,6 +160,7 @@ class EdgeResponse(BaseModel):
     validation_reasoning_round1: str
     validation_reasoning_round2: str
     time_period: TimePeriod
+    time_periods: list[TimePeriod] = Field(default_factory=list)
     attributes: Optional[MotionAttributes] = None
 
     # Revision tracking
@@ -250,6 +252,7 @@ class AnnotationModify(BaseModel):
     user_id: int
     new_predicate: Optional[str] = None
     new_time_period: Optional[TimePeriod] = None
+    new_time_periods: Optional[list[TimePeriod]] = None
     new_attributes: Optional[MotionAttributes] = None
     new_source: Optional[str | list[str]] = None
     new_target: Optional[str | list[str]] = None
@@ -266,6 +269,7 @@ class AnnotationCreate(BaseModel):
     target: str | list[str]
     predicate: str
     time_period: TimePeriod
+    time_periods: Optional[list[TimePeriod]] = None
     attributes: Optional[MotionAttributes] = None
     notes: Optional[str] = None
 
@@ -293,6 +297,8 @@ class RevisionResponse(BaseModel):
     new_predicate: Optional[str]
     original_time_period: Optional[dict]
     new_time_period: Optional[dict]
+    original_time_periods: Optional[list]
+    new_time_periods: Optional[list]
     original_attributes: Optional[dict]
     new_attributes: Optional[dict]
     review_notes: Optional[str]
@@ -444,6 +450,7 @@ class NodeModify(BaseModel):
     user_id: int
     new_visual_attributes: Optional[NodeVisualAttributes] = None
     new_physical_attributes: Optional[NodePhysicalAttributes] = None
+    new_is_static: Optional[bool] = None
     notes: Optional[str] = None
 
 
@@ -457,5 +464,7 @@ class NodeRevisionResponse(BaseModel):
     username: str
     original_attributes: Optional[dict[str, Any]]
     new_attributes: Optional[dict[str, Any]]
+    original_is_static: Optional[bool] = None
+    new_is_static: Optional[bool] = None
     review_notes: Optional[str]
     created_at: datetime

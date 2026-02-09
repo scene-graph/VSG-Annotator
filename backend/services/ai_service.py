@@ -5,7 +5,7 @@ import io
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Tuple
 
 import requests
 from PIL import Image
@@ -81,6 +81,61 @@ def extract_message_content(result: Dict[str, Any]) -> tuple[Optional[str], Dict
         return None, meta
     except Exception:
         return None, meta
+
+
+def extract_gemini_content(result: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any]]:
+    """
+    Extract text content from Gemini response.
+
+    Returns:
+        content: Extracted text or None
+        meta: Metadata about extraction (content_type, content_length)
+    """
+    meta: Dict[str, Any] = {"content_type": None, "content_length": None}
+    try:
+        candidates = result.get("candidates", [])
+        if not candidates:
+            return None, meta
+
+        content = candidates[0].get("content", {})
+        parts = content.get("parts", [])
+        texts: list[str] = []
+        for part in parts:
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+        combined = "".join(texts).strip()
+        meta["content_type"] = "text"
+        meta["content_length"] = len(combined)
+        return combined if combined else None, meta
+    except Exception:
+        return None, meta
+
+
+def post_with_retries(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> requests.Response:
+    """
+    POST with basic retries and increasing timeouts.
+    """
+    last_error = None
+    for attempt in range(3):
+        try:
+            timeout = 30 * (attempt + 1)  # 30s, 60s, 90s
+            logger.info(f"API attempt {attempt + 1}/3 with timeout {timeout}s")
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            return response
+        except requests.exceptions.Timeout as e:
+            last_error = e
+            logger.warning(f"API timeout on attempt {attempt + 1}: {e}")
+            if attempt < 2:
+                import time
+                time.sleep(2)
+            continue
+        except Exception as e:
+            last_error = e
+            logger.error(f"API error on attempt {attempt + 1}: {e}")
+            raise
+    raise ValueError(f"API request failed after 3 attempts. Last error: {last_error}")
 
 
 def crop_bbox_from_frame(frame_path: Path, bbox: dict, padding: int = 10) -> Image.Image:
@@ -180,6 +235,8 @@ async def suggest_node_attributes(
     node: Dict[str, Any],
     frame_idx: int,
     frames_path: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
     debug_mode: bool = False
 ) -> Dict[str, Any]:
     """
@@ -198,11 +255,25 @@ async def suggest_node_attributes(
     debug_info = {}
     result: Optional[Dict[str, Any]] = None
     response_content: Optional[str] = None
+    provider_name = (provider or settings.ai_default_provider).lower()
+    model_name = model
 
     try:
         # Check if API key is configured
-        if not settings.nvidia_api_key:
-            raise ValueError("NVIDIA_API_KEY not configured in environment")
+        if provider_name == "kimi":
+            if not settings.nvidia_api_key:
+                raise ValueError("NVIDIA_API_KEY not configured in environment")
+            model_name = model_name or settings.kimi_model
+        elif provider_name == "openai":
+            if not settings.openai_api_key:
+                raise ValueError("OPENAI_API_KEY not configured in environment")
+            model_name = model_name or settings.openai_model
+        elif provider_name == "gemini":
+            if not settings.gemini_api_key:
+                raise ValueError("GEMINI_API_KEY not configured in environment")
+            model_name = model_name or settings.gemini_model
+        else:
+            raise ValueError(f"Unsupported AI provider: {provider_name}")
 
         # Try to find the correct frame path
         frame_path = None
@@ -266,76 +337,104 @@ async def suggest_node_attributes(
         # Build prompt
         category = node.get('category', 'unknown')
         prompt = build_attribute_prompt(category, frame_idx)
+        debug_info['provider'] = provider_name
+        debug_info['model'] = model_name
 
-        # Prepare request to Kimi API
-        headers = {
-            "Authorization": f"Bearer {settings.nvidia_api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-
-        payload = {
-            "model": settings.kimi_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_b64}"
+        # Prepare request based on provider
+        if provider_name == "kimi":
+            headers = {
+                "Authorization": f"Bearer {settings.nvidia_api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{image_b64}"
+                                }
                             }
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": settings.kimi_max_tokens,
-            "temperature": settings.kimi_temperature,
-            "stream": False
-        }
+                        ]
+                    }
+                ],
+                "max_tokens": settings.kimi_max_tokens,
+                "temperature": settings.kimi_temperature,
+                "stream": False
+            }
 
-        # Add thinking mode if enabled
-        if settings.kimi_enable_thinking:
-            payload["extra_body"] = {"thinking": True}
+            if settings.kimi_enable_thinking:
+                payload["extra_body"] = {"thinking": True}
+
+            api_url = settings.kimi_api_url
+        elif provider_name == "openai":
+            headers = {
+                "Authorization": f"Bearer {settings.openai_api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{image_b64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "max_tokens": settings.openai_max_tokens,
+                "temperature": settings.openai_temperature
+            }
+            api_url = settings.openai_api_url
+        else:
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": settings.gemini_api_key
+            }
+            payload = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": prompt},
+                            {
+                                "inline_data": {
+                                    "mime_type": "image/jpeg",
+                                    "data": image_b64
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "generationConfig": {
+                    "maxOutputTokens": settings.gemini_max_tokens,
+                    "temperature": settings.gemini_temperature
+                }
+            }
+            base_url = settings.gemini_api_url.rstrip("/")
+            if ":generateContent" in base_url:
+                api_url = base_url
+            else:
+                api_url = f"{base_url}/{model_name}:generateContent"
 
         # Log image size and request details
-        logger.info(f"Calling Kimi API for node {node.get('node_id')} at frame {frame_idx}")
+        logger.info(f"Calling {provider_name} API for node {node.get('node_id')} at frame {frame_idx}")
         logger.info(f"Image size: {cropped_image.size}, Base64 length: {len(image_b64)}")
-        logger.info(f"API URL: {settings.kimi_api_url}")
-        logger.info(f"Model: {settings.kimi_model}")
+        logger.info(f"API URL: {api_url}")
+        logger.info(f"Model: {model_name}")
 
-        # Try up to 3 times with increasing timeouts
-        last_error = None
-        for attempt in range(3):
-            try:
-                timeout = 30 * (attempt + 1)  # 30s, 60s, 90s
-                logger.info(f"API attempt {attempt + 1}/3 with timeout {timeout}s")
-
-                response = requests.post(
-                    settings.kimi_api_url,
-                    headers=headers,
-                    json=payload,
-                    timeout=timeout
-                )
-
-                # If successful, break out of retry loop
-                break
-
-            except requests.exceptions.Timeout as e:
-                last_error = e
-                logger.warning(f"API timeout on attempt {attempt + 1}: {e}")
-                if attempt < 2:  # Don't sleep on last attempt
-                    import time
-                    time.sleep(2)  # Wait 2 seconds before retry
-                continue
-            except Exception as e:
-                last_error = e
-                logger.error(f"API error on attempt {attempt + 1}: {e}")
-                raise
-        else:
-            # All attempts failed
-            raise ValueError(f"API request failed after 3 attempts. Last error: {last_error}")
+        response = post_with_retries(api_url, headers, payload)
 
         # Check response
         if response.status_code != 200:
@@ -347,10 +446,12 @@ async def suggest_node_attributes(
         response_meta: Dict[str, Any] = {}
 
         # Extract content from response
-        if 'choices' not in result or len(result['choices']) == 0:
-            raise ValueError("No response from Kimi API")
-
-        response_content, response_meta = extract_message_content(result)
+        if provider_name in ("kimi", "openai"):
+            if 'choices' not in result or len(result['choices']) == 0:
+                raise ValueError("No response from AI API")
+            response_content, response_meta = extract_message_content(result)
+        else:
+            response_content, response_meta = extract_gemini_content(result)
         debug_info['response_meta'] = response_meta
         debug_info['response_content_present'] = bool(response_content)
 
@@ -405,9 +506,14 @@ async def suggest_node_attributes(
             suggestions['debug_info'] = debug_info
             suggestions['cropped_image'] = image_b64
             suggestions['raw_request'] = {
-                "model": settings.kimi_model,
-                "temperature": settings.kimi_temperature,
-                "max_tokens": settings.kimi_max_tokens,
+                "provider": provider_name,
+                "model": model_name,
+                "temperature": settings.kimi_temperature if provider_name == "kimi"
+                else settings.openai_temperature if provider_name == "openai"
+                else settings.gemini_temperature,
+                "max_tokens": settings.kimi_max_tokens if provider_name == "kimi"
+                else settings.openai_max_tokens if provider_name == "openai"
+                else settings.gemini_max_tokens,
                 "prompt": prompt[:500] + "..." if len(prompt) > 500 else prompt,
                 "image_size": cropped_image.size
             }

@@ -282,24 +282,66 @@ class SchemaValidator:
                     )
                 )
 
+    def _validate_time_period(self, tp: dict, path: str) -> None:
+        """Validate a single time period dict."""
+        if "start_frame" not in tp or "end_frame" not in tp:
+            self.errors.append(
+                ValidationError(
+                    path,
+                    "time_period must have start_frame and end_frame",
+                )
+            )
+
+    def _validate_time_periods(self, edge: dict, path: str) -> None:
+        """Validate time_periods list when present."""
+        if "time_periods" in edge:
+            if not isinstance(edge["time_periods"], list):
+                self.errors.append(
+                    ValidationError(
+                        f"{path}.time_periods",
+                        "time_periods must be a list",
+                    )
+                )
+                return
+            for idx, tp in enumerate(edge["time_periods"]):
+                if not isinstance(tp, dict):
+                    self.errors.append(
+                        ValidationError(
+                            f"{path}.time_periods[{idx}]",
+                            "time_periods entries must be objects",
+                        )
+                    )
+                    continue
+                self._validate_time_period(tp, f"{path}.time_periods[{idx}]")
+
     def _validate_static_edge(self, edge: dict, path: str) -> None:
         """Validate a static edge."""
-        required = ["edge_id", "source", "target", "predicate", "time_period"]
+        required = ["edge_id", "source", "target", "predicate"]
         for field in required:
             if field not in edge:
                 self.errors.append(
                     ValidationError(f"{path}.{field}", f"Missing required field: {field}")
                 )
 
+        if "time_period" not in edge and "time_periods" not in edge:
+            self.errors.append(
+                ValidationError(
+                    f"{path}.time_period",
+                    "Missing required field: time_period or time_periods",
+                )
+            )
         if "time_period" in edge:
             tp = edge["time_period"]
-            if "start_frame" not in tp or "end_frame" not in tp:
+            if isinstance(tp, dict):
+                self._validate_time_period(tp, f"{path}.time_period")
+            else:
                 self.errors.append(
                     ValidationError(
                         f"{path}.time_period",
-                        "time_period must have start_frame and end_frame",
+                        "time_period must be an object",
                     )
                 )
+        self._validate_time_periods(edge, path)
 
     def _validate_dynamic_edge(self, edge: dict, path: str) -> None:
         """Validate a dynamic edge with motion attributes."""
@@ -340,12 +382,32 @@ class SchemaValidator:
 
     def _validate_fg_bg_edge(self, edge: dict, path: str) -> None:
         """Validate a foreground-background edge with group-level support."""
-        required = ["edge_id", "source", "target", "predicate", "time_period"]
+        required = ["edge_id", "source", "target", "predicate"]
         for field in required:
             if field not in edge:
                 self.errors.append(
                     ValidationError(f"{path}.{field}", f"Missing required field: {field}")
                 )
+
+        if "time_period" not in edge and "time_periods" not in edge:
+            self.errors.append(
+                ValidationError(
+                    f"{path}.time_period",
+                    "Missing required field: time_period or time_periods",
+                )
+            )
+        if "time_period" in edge:
+            tp = edge["time_period"]
+            if isinstance(tp, dict):
+                self._validate_time_period(tp, f"{path}.time_period")
+            else:
+                self.errors.append(
+                    ValidationError(
+                        f"{path}.time_period",
+                        "time_period must be an object",
+                    )
+                )
+        self._validate_time_periods(edge, path)
 
         # Validate source/target are lists
         if "source" in edge and not isinstance(edge["source"], list):
