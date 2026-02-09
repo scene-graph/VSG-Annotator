@@ -1,23 +1,49 @@
 import { useState, useEffect } from 'react';
 import type { Node, NodeVisualAttributes, NodePhysicalAttributes } from '../../types';
+import { useAISuggestions } from '../../hooks/useAI';
+import { useAppStore } from '../../store';
+import type { AttributeSuggestionResponse } from '../../services/ai';
+import { AIDebugModal } from './AIDebugModal';
 
 interface NodeEditorProps {
   node: Node;
+  videoId: string;
   onSave: (changes: {
     visual?: NodeVisualAttributes;
     physical?: NodePhysicalAttributes;
+    is_static?: boolean;
   }) => void;
   onCancel: () => void;
 }
 
-// Attribute value options
-const COLOR_VALUES = ['unknown', 'red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'brown', 'black', 'white', 'gray', 'silver', 'gold', 'beige', 'tan', 'multi-colored'];
-const TEXTURE_VALUES = ['unknown', 'smooth', 'rough', 'soft', 'hard', 'glossy', 'matte', 'metallic', 'wooden', 'fabric', 'leather', 'plastic', 'glass', 'stone', 'concrete', 'tile', 'patterned'];
-const MATERIAL_VALUES = ['unknown', 'wood', 'metal', 'plastic', 'glass', 'fabric', 'leather', 'paper', 'cardboard', 'ceramic', 'stone', 'concrete', 'rubber', 'foam', 'composite'];
-const SIZE_VALUES = ['unknown', 'tiny', 'small', 'medium', 'large', 'very_large'];
-const SHAPE_VALUES = ['unknown', 'rectangular', 'square', 'round', 'oval', 'triangular', 'cylindrical', 'spherical', 'irregular', 'flat', 'cubic'];
+// Attribute value options - Updated to match schema exactly
+const COLOR_VALUES = [
+  'unknown', 'white', 'black', 'gray', 'brown', 'beige', 'tan', 'red', 'orange',
+  'yellow', 'green', 'blue', 'purple', 'pink', 'gold', 'silver',
+  'copper', 'bronze', 'light', 'dark', 'varied', 'multicolor', 'transparent'
+];
 
-export function NodeEditor({ node, onSave, onCancel }: NodeEditorProps) {
+const TEXTURE_VALUES = [
+  'unknown', 'smooth', 'rough', 'soft', 'hard', 'fuzzy', 'fluffy', 'woven',
+  'knitted', 'glossy', 'matte', 'grainy', 'bumpy', 'wrinkled',
+  'crinkled', 'patterned'
+];
+
+const MATERIAL_VALUES = [
+  'unknown', 'wood', 'metal', 'plastic', 'glass', 'ceramic', 'stone', 'concrete',
+  'fabric', 'leather', 'cloth', 'foam', 'rubber', 'paper', 'cardboard',
+  'skin', 'hair', 'fur'
+];
+
+const SIZE_VALUES = ['unknown', 'tiny', 'small', 'medium', 'large', 'huge', 'normal'];
+
+const SHAPE_VALUES = [
+  'unknown', 'rectangular', 'square', 'triangular', 'oval', 'circular', 'flat',
+  'cylindrical', 'spherical', 'box-shaped', 'humanoid', 'hand-shaped',
+  'irregular', 'elongated', 'round'
+];
+
+export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps) {
   // Visual attributes
   const [color, setColor] = useState(node.attributes?.visual?.color || 'unknown');
   const [texture, setTexture] = useState(node.attributes?.visual?.texture || 'unknown');
@@ -26,6 +52,16 @@ export function NodeEditor({ node, onSave, onCancel }: NodeEditorProps) {
   // Physical attributes
   const [size, setSize] = useState(node.attributes?.physical?.size || 'medium');
   const [shape, setShape] = useState(node.attributes?.physical?.shape || 'unknown');
+  const [isStatic, setIsStatic] = useState(node.is_static);
+
+  // AI suggestions
+  const currentFrame = useAppStore((state) => state.currentFrame);
+  const aiMutation = useAISuggestions();
+  const [aiSuggestions, setAiSuggestions] = useState<AttributeSuggestionResponse | null>(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [debugMode, setDebugMode] = useState(true); // Default to true for debugging
+  const [showDebugModal, setShowDebugModal] = useState(false);
+  const [debugInfo, setDebugInfo] = useState<any>(null);
 
   // Sync local state when node prop changes
   useEffect(() => {
@@ -34,13 +70,124 @@ export function NodeEditor({ node, onSave, onCancel }: NodeEditorProps) {
     setMaterial(node.attributes?.visual?.material || 'unknown');
     setSize(node.attributes?.physical?.size || 'medium');
     setShape(node.attributes?.physical?.shape || 'unknown');
+    setIsStatic(node.is_static);
   }, [node.node_id, node.attributes?.visual?.color, node.attributes?.visual?.texture,
-      node.attributes?.visual?.material, node.attributes?.physical?.size, node.attributes?.physical?.shape]);
+      node.attributes?.visual?.material, node.attributes?.physical?.size, node.attributes?.physical?.shape, node.is_static]);
+
+  // Get AI suggestions
+  const handleGetAISuggestions = async () => {
+    try {
+      setShowSuggestions(false);
+      const result = await aiMutation.mutateAsync({
+        video_id: videoId,
+        node_id: node.node_id,
+        frame_idx: currentFrame,
+        debug: debugMode,
+      });
+
+      // Always set debug info if in debug mode
+      if (debugMode) {
+        // Calculate node's visible frame range
+        // Frontend receives transformed data where bboxes are directly on the node
+        const bboxes = node.bboxes_by_frame || {};
+        const frameNumbers = Object.keys(bboxes).map(Number).sort((a, b) => a - b);
+        const nodeFrameRange = frameNumbers.length > 0
+          ? { min: frameNumbers[0], max: frameNumbers[frameNumbers.length - 1] }
+          : null;
+
+        const debugData = {
+          request: {
+            video_id: videoId,
+            node_id: node.node_id,
+            frame_idx: currentFrame,
+            bbox: bboxes[String(currentFrame)],
+            frame_path: `Frame ${currentFrame} (UI shows as Frame ${currentFrame + 1})`,
+            node_visible_range: nodeFrameRange
+              ? `Frames ${nodeFrameRange.min}-${nodeFrameRange.max} (UI: ${nodeFrameRange.min + 1}-${nodeFrameRange.max + 1})`
+              : 'No frames',
+          },
+          cropped_image: result.cropped_image,
+          raw_request: result.raw_request,
+          raw_response: result.raw_response,
+          response_content: result.response_content,
+          processed_suggestions: !result.error ? {
+            visual: result.visual,
+            physical: result.physical,
+            confidence: result.confidence,
+          } : undefined,
+          error: result.error,
+          debug_info: result.debug_info,
+        };
+        setDebugInfo(debugData);
+        setShowDebugModal(true);
+      }
+
+      if (!result.error) {
+        setAiSuggestions(result);
+        setShowSuggestions(true);
+      } else {
+        console.error('AI suggestion error:', result.error);
+        // Show error even without debug mode
+        if (!debugMode) {
+          alert(`AI Error: ${result.error}`);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to get AI suggestions:', error);
+      if (debugMode) {
+        setDebugInfo({
+          request: {
+            video_id: videoId,
+            node_id: node.node_id,
+            frame_idx: currentFrame,
+          },
+          error: String(error),
+        });
+        setShowDebugModal(true);
+      } else {
+        alert(`Failed to get AI suggestions: ${error}`);
+      }
+    }
+  };
+
+  // Apply AI suggestion
+  const applyAISuggestion = (attribute: string, value: string) => {
+    switch (attribute) {
+      case 'color':
+        setColor(value);
+        break;
+      case 'texture':
+        setTexture(value);
+        break;
+      case 'material':
+        setMaterial(value);
+        break;
+      case 'size':
+        setSize(value);
+        break;
+      case 'shape':
+        setShape(value);
+        break;
+    }
+  };
+
+  // Apply all AI suggestions at once
+  const applyAllSuggestions = () => {
+    if (aiSuggestions) {
+      setColor(aiSuggestions.visual.color);
+      setTexture(aiSuggestions.visual.texture);
+      setMaterial(aiSuggestions.visual.material);
+      setSize(aiSuggestions.physical.size);
+      setShape(aiSuggestions.physical.shape);
+      setShowSuggestions(false);
+    }
+  };
 
   const handleSave = () => {
     const changes: {
       visual?: NodeVisualAttributes;
       physical?: NodePhysicalAttributes;
+      is_static?: boolean;
     } = {};
 
     // Check for visual attribute changes
@@ -55,6 +202,10 @@ export function NodeEditor({ node, onSave, onCancel }: NodeEditorProps) {
       changes.physical = { size, shape };
     }
 
+    if (isStatic !== node.is_static) {
+      changes.is_static = isStatic;
+    }
+
     if (Object.keys(changes).length === 0) {
       onCancel();
       return;
@@ -64,7 +215,132 @@ export function NodeEditor({ node, onSave, onCancel }: NodeEditorProps) {
   };
 
   return (
-    <div className="space-y-4">
+    <>
+      {/* Debug Modal */}
+      <AIDebugModal
+        isOpen={showDebugModal}
+        onClose={() => setShowDebugModal(false)}
+        debugInfo={debugInfo}
+      />
+
+      <div className="space-y-4">
+        {/* AI Suggestions Section */}
+        <div>
+          {/* Debug Mode Toggle */}
+          <div className="flex items-center justify-between mb-2">
+            <label className="flex items-center gap-2 text-sm text-gray-400">
+              <input
+                type="checkbox"
+                checked={debugMode}
+                onChange={(e) => setDebugMode(e.target.checked)}
+                className="rounded"
+              />
+              Debug Mode
+            </label>
+            {debugInfo && (
+              <button
+                onClick={() => setShowDebugModal(true)}
+                className="text-xs text-purple-400 hover:text-purple-300"
+              >
+                View Last Debug Info
+              </button>
+            )}
+          </div>
+
+          {/* AI Suggestions Button */}
+          <button
+            onClick={handleGetAISuggestions}
+            disabled={aiMutation.isPending}
+            className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 text-white py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
+          >
+          {aiMutation.isPending ? (
+            <>
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              Getting AI Suggestions...
+            </>
+          ) : (
+            <>
+              <span className="text-lg">✨</span>
+              Get AI Suggestions
+            </>
+          )}
+        </button>
+
+        {/* Display AI Suggestions */}
+        {showSuggestions && aiSuggestions && !aiSuggestions.error && (
+          <div className="mt-3 p-3 bg-purple-900/20 border border-purple-600/30 rounded-lg">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-purple-300">
+                AI Suggestions (Confidence: {(aiSuggestions.confidence * 100).toFixed(0)}%)
+              </span>
+              <button
+                onClick={applyAllSuggestions}
+                className="text-xs bg-purple-600 hover:bg-purple-700 px-2 py-1 rounded text-white"
+              >
+                Apply All
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {/* Visual suggestions */}
+              <div className="text-xs text-gray-400">Visual:</div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => applyAISuggestion('color', aiSuggestions.visual.color)}
+                  className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
+                  title="Click to apply"
+                >
+                  color: <span className="text-purple-300">{aiSuggestions.visual.color}</span>
+                </button>
+                <button
+                  onClick={() => applyAISuggestion('texture', aiSuggestions.visual.texture)}
+                  className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
+                  title="Click to apply"
+                >
+                  texture: <span className="text-purple-300">{aiSuggestions.visual.texture}</span>
+                </button>
+                <button
+                  onClick={() => applyAISuggestion('material', aiSuggestions.visual.material)}
+                  className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
+                  title="Click to apply"
+                >
+                  material: <span className="text-purple-300">{aiSuggestions.visual.material}</span>
+                </button>
+              </div>
+
+              {/* Physical suggestions */}
+              <div className="text-xs text-gray-400">Physical:</div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => applyAISuggestion('size', aiSuggestions.physical.size)}
+                  className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
+                  title="Click to apply"
+                >
+                  size: <span className="text-purple-300">{aiSuggestions.physical.size}</span>
+                </button>
+                <button
+                  onClick={() => applyAISuggestion('shape', aiSuggestions.physical.shape)}
+                  className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded"
+                  title="Click to apply"
+                >
+                  shape: <span className="text-purple-300">{aiSuggestions.physical.shape}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Error message */}
+        {aiSuggestions?.error && (
+          <div className="mt-2 p-2 bg-red-900/20 border border-red-600/30 rounded text-xs text-red-400">
+            Error: {aiSuggestions.error}
+          </div>
+        )}
+      </div>
+
       {/* Visual Attributes */}
       <div className="space-y-2">
         <div className="text-gray-400 text-xs uppercase">Visual Attributes</div>
@@ -165,6 +441,22 @@ export function NodeEditor({ node, onSave, onCancel }: NodeEditorProps) {
         </div>
       </div>
 
+      {/* Node Type */}
+      <div className="space-y-2">
+        <div className="text-gray-400 text-xs uppercase">Node Type</div>
+        <div>
+          <label className="text-gray-500 text-xs block mb-1">Static / Dynamic</label>
+          <select
+            value={isStatic ? 'static' : 'dynamic'}
+            onChange={(e) => setIsStatic(e.target.value === 'static')}
+            className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+          >
+            <option value="static">Static</option>
+            <option value="dynamic">Dynamic</option>
+          </select>
+        </div>
+      </div>
+
       {/* Action buttons */}
       <div className="flex gap-2">
         <button
@@ -179,7 +471,8 @@ export function NodeEditor({ node, onSave, onCancel }: NodeEditorProps) {
         >
           Cancel
         </button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
