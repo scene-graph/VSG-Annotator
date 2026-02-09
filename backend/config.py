@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     nvidia_api_key: str = Field("", alias="NVIDIA_API_KEY")
     kimi_api_url: str = "https://integrate.api.nvidia.com/v1/chat/completions"
     kimi_model: str = "moonshotai/kimi-k2.5"
-    kimi_max_tokens: int = 1024
-    kimi_temperature: float = 0.6
+    kimi_max_tokens: int = 4096
+    kimi_temperature: float = 0.3
     kimi_enable_thinking: bool = False
 
     # Multi-provider AI Configuration

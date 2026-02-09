@@ -41,6 +41,8 @@ export interface Node {
   is_static: boolean;
   attributes: NodeAttributes;
   bboxes_by_frame: Record<string, BBox>;
+  has_revision?: boolean;
+  revision_action?: string;
 }
 
 // Edge types

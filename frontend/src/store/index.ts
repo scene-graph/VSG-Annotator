@@ -25,6 +25,10 @@ export interface EdgeCreationState {
   edgeType: EdgeType | null;
 }
 
+const AI_SUGGESTION_STORAGE_VERSION = 1;
+
+type AISuggestionSource = 'bulk' | 'single';
+
 interface AppState {
   // Current video
   currentVideo: VideoDetail | null;
@@ -97,13 +101,13 @@ interface AppState {
   aiSuggestionsByNode: Record<string, AttributeSuggestionResponse>;
   aiSuggestionStatusByNode: Record<string, 'idle' | 'pending' | 'done' | 'error'>;
   aiSuggestionFrameByNode: Record<string, number>;
-  aiSuggestionSourceByNode: Record<string, 'bulk' | 'single'>;
+  aiSuggestionSourceByNode: Record<string, AISuggestionSource>;
   bulkAiProgress: { total: number; completed: number; running: boolean; cancelled: boolean };
   setAiSuggestion: (
     nodeId: string,
     suggestion: AttributeSuggestionResponse,
     frameIdx: number,
-    source: 'bulk' | 'single'
+    source: AISuggestionSource
   ) => void;
   setAiSuggestionStatus: (nodeId: string, status: 'idle' | 'pending' | 'done' | 'error') => void;
   clearAiSuggestion: (nodeId: string) => void;
@@ -112,9 +116,40 @@ interface AppState {
   finishBulkAi: () => void;
   cancelBulkAi: () => void;
   resetBulkAi: () => void;
+
+  // Persistence helpers
+  hydrateAiSuggestions: (videoId: string) => void;
+  clearAiSuggestions: () => void;
 }
 
 const initialFilters: EdgeFilters = {};
+
+type AiSnapshot = Pick<
+  AppState,
+  | 'aiSuggestionsByNode'
+  | 'aiSuggestionFrameByNode'
+  | 'aiSuggestionSourceByNode'
+  | 'aiSuggestionStatusByNode'
+  | 'bulkAiProgress'
+>;
+
+const buildAiSnapshot = (state: AppState, overrides: Partial<AiSnapshot> = {}): AiSnapshot => ({
+  aiSuggestionsByNode: overrides.aiSuggestionsByNode ?? state.aiSuggestionsByNode,
+  aiSuggestionFrameByNode: overrides.aiSuggestionFrameByNode ?? state.aiSuggestionFrameByNode,
+  aiSuggestionSourceByNode: overrides.aiSuggestionSourceByNode ?? state.aiSuggestionSourceByNode,
+  aiSuggestionStatusByNode: overrides.aiSuggestionStatusByNode ?? state.aiSuggestionStatusByNode,
+  bulkAiProgress: overrides.bulkAiProgress ?? state.bulkAiProgress,
+});
+
+const persistAiSnapshot = (videoId: string, snapshot: AiSnapshot) => {
+  if (!videoId || typeof localStorage === 'undefined') {
+    return;
+  }
+  localStorage.setItem(
+    `ai_suggestions:${videoId}`,
+    JSON.stringify({ version: AI_SUGGESTION_STORAGE_VERSION, ...snapshot })
+  );
+};
 
 export const useAppStore = create<AppState>((set) => ({
   // Current video
@@ -294,47 +329,163 @@ export const useAppStore = create<AppState>((set) => ({
   aiSuggestionSourceByNode: {},
   bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
   setAiSuggestion: (nodeId, suggestion, frameIdx, source) =>
-    set((state) => ({
-      aiSuggestionsByNode: { ...state.aiSuggestionsByNode, [nodeId]: suggestion },
-      aiSuggestionFrameByNode: { ...state.aiSuggestionFrameByNode, [nodeId]: frameIdx },
-      aiSuggestionSourceByNode: { ...state.aiSuggestionSourceByNode, [nodeId]: source },
-      aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: 'done' },
-    })),
+    set((state) => {
+      const next = {
+        aiSuggestionsByNode: { ...state.aiSuggestionsByNode, [nodeId]: suggestion },
+        aiSuggestionFrameByNode: { ...state.aiSuggestionFrameByNode, [nodeId]: frameIdx },
+        aiSuggestionSourceByNode: { ...state.aiSuggestionSourceByNode, [nodeId]: source },
+        aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: 'done' },
+      };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
+    }),
   setAiSuggestionStatus: (nodeId, status) =>
-    set((state) => ({
-      aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: status },
-    })),
+    set((state) => {
+      const next = {
+        aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: status },
+      };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(
+          videoId,
+          buildAiSnapshot(state, { aiSuggestionStatusByNode: next.aiSuggestionStatusByNode })
+        );
+      }
+      return next;
+    }),
   clearAiSuggestion: (nodeId) =>
     set((state) => {
       const { [nodeId]: _removedSuggestion, ...remainingSuggestions } = state.aiSuggestionsByNode;
       const { [nodeId]: _removedFrame, ...remainingFrames } = state.aiSuggestionFrameByNode;
       const { [nodeId]: _removedSource, ...remainingSources } = state.aiSuggestionSourceByNode;
-      return {
+      const next = {
         aiSuggestionsByNode: remainingSuggestions,
         aiSuggestionFrameByNode: remainingFrames,
         aiSuggestionSourceByNode: remainingSources,
         aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: 'idle' },
       };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
     }),
   startBulkAi: (total) =>
-    set({
-      bulkAiProgress: { total, completed: 0, running: true, cancelled: false },
+    set((state) => {
+      const next = { bulkAiProgress: { total, completed: 0, running: true, cancelled: false } };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
     }),
   updateBulkAiProgress: (completed) =>
-    set((state) => ({
-      bulkAiProgress: { ...state.bulkAiProgress, completed },
-    })),
+    set((state) => {
+      const next = { bulkAiProgress: { ...state.bulkAiProgress, completed } };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
+    }),
   finishBulkAi: () =>
-    set((state) => ({
-      bulkAiProgress: { ...state.bulkAiProgress, running: false },
-    })),
+    set((state) => {
+      const next = { bulkAiProgress: { ...state.bulkAiProgress, running: false } };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
+    }),
   cancelBulkAi: () =>
-    set((state) => ({
-      bulkAiProgress: { ...state.bulkAiProgress, cancelled: true, running: false },
-    })),
+    set((state) => {
+      const next = { bulkAiProgress: { ...state.bulkAiProgress, cancelled: true, running: false } };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
+    }),
   resetBulkAi: () =>
     set({
       bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+    }),
+
+  hydrateAiSuggestions: (videoId) =>
+    set(() => {
+      if (!videoId || typeof localStorage === 'undefined') {
+        return {
+          aiSuggestionsByNode: {},
+          aiSuggestionStatusByNode: {},
+          aiSuggestionFrameByNode: {},
+          aiSuggestionSourceByNode: {},
+          bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+        };
+      }
+      try {
+        const raw = localStorage.getItem(`ai_suggestions:${videoId}`);
+        if (!raw) {
+          return {
+            aiSuggestionsByNode: {},
+            aiSuggestionStatusByNode: {},
+            aiSuggestionFrameByNode: {},
+            aiSuggestionSourceByNode: {},
+            bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+          };
+        }
+        const parsed = JSON.parse(raw);
+        if (parsed?.version !== AI_SUGGESTION_STORAGE_VERSION) {
+          return {
+            aiSuggestionsByNode: {},
+            aiSuggestionStatusByNode: {},
+            aiSuggestionFrameByNode: {},
+            aiSuggestionSourceByNode: {},
+            bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+          };
+        }
+        const storedProgress = parsed.bulkAiProgress;
+        const bulkAiProgress = storedProgress && typeof storedProgress.total === 'number'
+          ? {
+              total: storedProgress.total,
+              completed: storedProgress.completed ?? 0,
+              running: false,
+              cancelled: false,
+            }
+          : { total: 0, completed: 0, running: false, cancelled: false };
+        return {
+          aiSuggestionsByNode: parsed.aiSuggestionsByNode || {},
+          aiSuggestionStatusByNode: parsed.aiSuggestionStatusByNode || {},
+          aiSuggestionFrameByNode: parsed.aiSuggestionFrameByNode || {},
+          aiSuggestionSourceByNode: parsed.aiSuggestionSourceByNode || {},
+          bulkAiProgress,
+        };
+      } catch {
+        return {
+          aiSuggestionsByNode: {},
+          aiSuggestionStatusByNode: {},
+          aiSuggestionFrameByNode: {},
+          aiSuggestionSourceByNode: {},
+          bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+        };
+      }
+    }),
+
+  clearAiSuggestions: () =>
+    set((state) => {
+      const videoId = state.currentVideo?.video_id;
+      if (videoId && typeof localStorage !== 'undefined') {
+        localStorage.removeItem(`ai_suggestions:${videoId}`);
+      }
+      return {
+        aiSuggestionsByNode: {},
+        aiSuggestionStatusByNode: {},
+        aiSuggestionFrameByNode: {},
+        aiSuggestionSourceByNode: {},
+        bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+      };
     }),
 }));
 
@@ -360,3 +511,5 @@ export const useBulkAiProgress = () => useAppStore((state) => state.bulkAiProgre
 export const useAiProvider = () => useAppStore((state) => state.aiProvider);
 export const useSetAiProvider = () => useAppStore((state) => state.setAiProvider);
 export const useResetBulkAi = () => useAppStore((state) => state.resetBulkAi);
+export const useHydrateAiSuggestions = () => useAppStore((state) => state.hydrateAiSuggestions);
+export const useClearAiSuggestions = () => useAppStore((state) => state.clearAiSuggestions);

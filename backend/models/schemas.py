@@ -88,6 +88,8 @@ class NodeResponse(BaseModel):
     is_static: bool
     attributes: NodeAttributes
     bboxes_by_frame: dict[str, BBox]
+    has_revision: bool = False
+    revision_action: Optional[str] = None
 
 
 # ============================================================================

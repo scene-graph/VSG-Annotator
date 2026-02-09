@@ -69,6 +69,7 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
   const justSelectedNodeIdRef = useRef<string | null>(null);
   const nodeOrderRef = useRef<Map<string, number>>(new Map());
   const [containerHeight, setContainerHeight] = useState(200);
+  const hasReviewedNodes = useMemo(() => nodes.some((node) => node.has_revision), [nodes]);
 
   const currentFrame = useCurrentFrame();
   const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
@@ -289,6 +290,7 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
       const isSource = sourceNodes.includes(node.node_id);
       const isTarget = targetNodes.includes(node.node_id);
       const isSelected = selectedNode?.node_id === node.node_id;
+      const isReviewed = Boolean(node.has_revision);
       const hasEdgeSelection = selectedEdge !== null;
       const hasNodeSelection = selectedNode !== null;
       const isInCreationMode = edgeCreation.isCreating;
@@ -421,6 +423,17 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
             .text(`${segment.start}-${segment.end}`);
         }
       });
+
+      if (isReviewed && segments.length > 0) {
+        const lastSegment = segments[segments.length - 1];
+        const endX = xScale(lastSegment.end);
+        g.append('circle')
+          .attr('cx', endX - 8)
+          .attr('cy', y + LANE_HEIGHT / 2)
+          .attr('r', 4)
+          .attr('fill', '#22c55e')
+          .attr('pointer-events', 'none');
+      }
 
       // Add badge indicator for edge creation mode
       if (isInCreationMode && (isSource || isTarget)) {
@@ -648,6 +661,12 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
               <span className="text-gray-300 text-xs">Dynamic</span>
             </div>
           </>
+        )}
+        {hasReviewedNodes && (
+          <div className="flex items-center gap-1 ml-2 border-l border-gray-600 pl-3">
+            <span className="w-3 h-3 rounded-full" style={{ backgroundColor: '#22c55e' }} />
+            <span className="text-gray-300 text-xs">Reviewed</span>
+          </div>
         )}
         {edgeDragState && (
           <div className="flex items-center gap-1 ml-2 border-l border-gray-600 pl-3 animate-pulse">

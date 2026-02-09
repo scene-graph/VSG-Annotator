@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Routes, Route, Link, useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { useAppStore, useFilters, useCurrentUser, useSelectedNode, useSelectedEdge, useAnnotationMode, useBulkAiProgress, useAiProvider, useSetAiProvider, useResetBulkAi } from './store';
-import { usersApi } from './services/api';
+import { useAppStore, useFilters, useCurrentUser, useSelectedNode, useSelectedEdge, useAnnotationMode, useBulkAiProgress, useAiProvider, useSetAiProvider, useResetBulkAi, useHydrateAiSuggestions, useClearAiSuggestions } from './store';
+import { usersApi, videosApi } from './services/api';
 import { useVideos, useVideo, useNodes, useEdges } from './hooks';
 import { VideoPlayer } from './components/VideoPlayer';
 import { TrackletTimeline } from './components/TrackletTimeline';
@@ -198,6 +198,8 @@ function VideoAnnotation() {
   const aiProvider = useAiProvider();
   const setAiProvider = useSetAiProvider();
   const resetBulkAi = useResetBulkAi();
+  const hydrateAiSuggestions = useHydrateAiSuggestions();
+  const clearAiSuggestions = useClearAiSuggestions();
   const [showBulkReviewPrompt, setShowBulkReviewPrompt] = useState(false);
 
   const [showMetadata, setShowMetadata] = useState(false);
@@ -241,6 +243,7 @@ function VideoAnnotation() {
   }, []);
 
   const { data: video, isLoading: videoLoading, error: videoError } = useVideo(videoId);
+  const [videoStatus, setVideoStatus] = useState<string>('pending');
   const { data: nodesData } = useNodes(videoId);
   const { data: edgesData } = useEdges(videoId, filters);
 
@@ -250,9 +253,23 @@ function VideoAnnotation() {
   }, [video, setCurrentVideo]);
 
   useEffect(() => {
+    if (video?.status) {
+      setVideoStatus(video.status);
+    }
+  }, [video?.status]);
+
+  useEffect(() => {
     resetBulkAi();
     setShowBulkReviewPrompt(false);
   }, [videoId, resetBulkAi]);
+
+  useEffect(() => {
+    if (videoId) {
+      hydrateAiSuggestions(videoId);
+    } else {
+      clearAiSuggestions();
+    }
+  }, [videoId, hydrateAiSuggestions, clearAiSuggestions]);
 
   useEffect(() => {
     if (nodesData) setNodes(nodesData);
@@ -363,6 +380,16 @@ function VideoAnnotation() {
     setShowBulkReviewPrompt(false);
   }, [cancelBulkAi]);
 
+  const handleStatusChange = async (newStatus: string) => {
+    if (!video) return;
+    try {
+      const result = await videosApi.updateStatus(video.video_id, newStatus);
+      setVideoStatus(result.status);
+    } catch (error) {
+      console.error('Failed to update video status:', error);
+    }
+  };
+
   useEffect(() => {
     if (bulkAiProgress.running) {
       setShowBulkReviewPrompt(false);
@@ -460,6 +487,22 @@ function VideoAnnotation() {
           <ImportButton videoId={video.video_id} />
           <SaveButton videoId={video.video_id} />
           <ExportButton videoId={video.video_id} />
+          <select
+            value={videoStatus}
+            onChange={(e) => handleStatusChange(e.target.value)}
+            className={clsx(
+              'rounded px-2 py-1 text-sm border',
+              videoStatus === 'completed'
+                ? 'bg-green-600/20 text-green-200 border-green-600/40'
+                : videoStatus === 'in_progress'
+                ? 'bg-yellow-600/20 text-yellow-200 border-yellow-600/40'
+                : 'bg-gray-700 text-gray-200 border-gray-600'
+            )}
+          >
+            <option value="pending">pending</option>
+            <option value="in_progress">in_progress</option>
+            <option value="completed">completed</option>
+          </select>
           <UserSelector />
         </div>
       </header>

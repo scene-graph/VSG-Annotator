@@ -103,6 +103,29 @@ def normalize_camera_motion(raw_data: Optional[dict[str, Any]]) -> Optional[dict
 router = APIRouter(prefix="/videos", tags=["videos"])
 
 
+@router.patch("/{video_id}/status")
+async def update_video_status(
+    video_id: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update video status."""
+    status = payload.get("status")
+    if status not in {"pending", "in_progress", "completed"}:
+        raise HTTPException(status_code=400, detail="Invalid status value")
+
+    result = await db.execute(select(Video).where(Video.video_id == video_id))
+    video = result.scalar_one_or_none()
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+
+    video.status = status
+    db.add(video)
+    await db.commit()
+    await db.refresh(video)
+    return {"video_id": video.video_id, "status": video.status}
+
+
 @router.get("", response_model=list[VideoSummary])
 async def list_videos(
     db: AsyncSession = Depends(get_db),
@@ -323,6 +346,11 @@ async def get_nodes(
                     node.attributes.visual = NodeVisualAttributes(**visual)
                 if physical:
                     node.attributes.physical = NodePhysicalAttributes(**physical)
+            node.has_revision = True
+            node.revision_action = latest_rev.action
+        else:
+            node.has_revision = False
+            node.revision_action = None
 
     # Filter by static/dynamic
     if is_static is not None:
@@ -358,6 +386,25 @@ async def get_node(
 
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+
+    from backend.core.revision_tracker import RevisionTracker
+    tracker = RevisionTracker(db)
+    latest_rev = await tracker.get_latest_node_revision(video_id, node.node_id)
+    if latest_rev:
+        if latest_rev.new_is_static is not None:
+            node.is_static = latest_rev.new_is_static
+        if latest_rev.new_attributes:
+            visual = latest_rev.new_attributes.get("visual")
+            physical = latest_rev.new_attributes.get("physical")
+            if visual:
+                node.attributes.visual = NodeVisualAttributes(**visual)
+            if physical:
+                node.attributes.physical = NodePhysicalAttributes(**physical)
+        node.has_revision = True
+        node.revision_action = latest_rev.action
+    else:
+        node.has_revision = False
+        node.revision_action = None
 
     return node
 

@@ -21,6 +21,13 @@ from backend.models.schemas import (
 )
 from backend.services.annotation_service import AnnotationService
 
+
+async def mark_video_in_progress(db: AsyncSession, video: Video) -> None:
+    """Mark video as in_progress if not already completed."""
+    if video.status != "completed":
+        video.status = "in_progress"
+        db.add(video)
+
 router = APIRouter(prefix="/annotations", tags=["annotations"])
 
 
@@ -45,6 +52,7 @@ async def accept_edge(
 
     try:
         result = await service.accept_edge(annotation)
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -72,6 +80,7 @@ async def reject_edge(
 
     try:
         result = await service.reject_edge(annotation)
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -99,6 +108,7 @@ async def modify_edge(
 
     try:
         result = await service.modify_edge(annotation)
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -126,6 +136,7 @@ async def create_edge(
 
     try:
         result = await service.create_edge(annotation)
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -166,6 +177,7 @@ async def delete_edge(
             user_id=request.user_id,
             review_notes=request.review_notes,
         )
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -219,6 +231,7 @@ async def modify_node(
 
     try:
         result = await service.modify_node(modification)
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -283,6 +296,7 @@ async def modify_scene_info(
     )
 
     db.add(revision)
+    await mark_video_in_progress(db, video)
     await db.commit()
     await db.refresh(revision)
 
@@ -328,6 +342,7 @@ async def modify_camera_motion(
     )
 
     db.add(revision)
+    await mark_video_in_progress(db, video)
     await db.commit()
     await db.refresh(revision)
 

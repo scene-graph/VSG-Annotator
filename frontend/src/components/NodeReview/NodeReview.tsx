@@ -98,6 +98,8 @@ export function NodeReview({ videoId }: NodeReviewProps) {
           visual: changes.visual || selectedNode.attributes.visual,
           physical: changes.physical || selectedNode.attributes.physical,
         },
+        has_revision: true,
+        revision_action: 'modify',
       };
 
       // Update nodes in store

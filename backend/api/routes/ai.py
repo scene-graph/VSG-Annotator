@@ -199,8 +199,9 @@ async def check_ai_health() -> dict:
         "default_provider": settings.ai_default_provider,
         "providers": {
             "kimi": {
-                "enabled": bool(settings.nvidia_api_key),
-                "model": settings.kimi_model
+                "enabled": bool(settings.nvidia_api_key or settings.kimi_api_key),
+                "model": settings.kimi_model,
+                "key_source": "nvidia" if settings.nvidia_api_key else "kimi" if settings.kimi_api_key else "none",
             },
             "openai": {
                 "enabled": bool(settings.openai_api_key),

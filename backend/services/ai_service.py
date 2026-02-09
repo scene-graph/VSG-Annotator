@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Optional, Any, Tuple
 
@@ -51,7 +52,7 @@ def extract_message_content(result: Dict[str, Any]) -> tuple[Optional[str], Dict
         content: Extracted text content or None
         meta: Metadata about extraction (content_type, content_length)
     """
-    meta: Dict[str, Any] = {"content_type": None, "content_length": None}
+    meta: Dict[str, Any] = {"content_type": None, "content_length": None, "content_source": None}
     try:
         choices = result.get("choices", [])
         if not choices:
@@ -62,8 +63,10 @@ def extract_message_content(result: Dict[str, Any]) -> tuple[Optional[str], Dict
         meta["content_type"] = type(content).__name__
 
         if isinstance(content, str):
-            meta["content_length"] = len(content)
-            return content, meta
+            if content.strip():
+                meta["content_length"] = len(content)
+                meta["content_source"] = "content"
+                return content, meta
 
         if isinstance(content, list):
             parts: list[str] = []
@@ -76,11 +79,91 @@ def extract_message_content(result: Dict[str, Any]) -> tuple[Optional[str], Dict
                     parts.append(part)
             combined = "".join(parts).strip()
             meta["content_length"] = len(combined)
-            return combined if combined else None, meta
+            if combined:
+                meta["content_source"] = "content"
+                return combined, meta
+
+        for fallback_key in ("reasoning_content", "reasoning"):
+            fallback = message.get(fallback_key)
+            if isinstance(fallback, str) and fallback.strip():
+                meta["content_type"] = type(fallback).__name__
+                meta["content_length"] = len(fallback.strip())
+                meta["content_source"] = fallback_key
+                return fallback.strip(), meta
 
         return None, meta
     except Exception:
         return None, meta
+
+
+def extract_last_json_object(text: str) -> Optional[str]:
+    """
+    Extract the last balanced JSON object substring from text.
+    """
+    start = None
+    depth = 0
+    last_obj = None
+    for idx, char in enumerate(text):
+        if char == "{":
+            if depth == 0:
+                start = idx
+            depth += 1
+        elif char == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    last_obj = text[start:idx + 1]
+                    start = None
+    return last_obj
+
+
+def _matches_option(text: str, option: str) -> bool:
+    pattern = rf"(?<![a-z0-9-]){re.escape(option)}(?![a-z0-9-])"
+    return re.search(pattern, text) is not None
+
+
+def _find_value_for_label(text: str, label: str, options: list[str]) -> Optional[str]:
+    lowered = text.lower()
+    segments = [seg.strip() for seg in re.split(r"[\n\r]+", lowered) if seg.strip()]
+    candidates: list[str] = []
+    for segment in segments:
+        if label in segment:
+            for option in options:
+                if _matches_option(segment, option):
+                    candidates.append(option)
+    if candidates:
+        return candidates[-1]
+    for option in options:
+        if _matches_option(lowered, option):
+            return option
+    return None
+
+
+def infer_attributes_from_text(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Best-effort extraction of attributes from free-form text.
+    """
+    color = _find_value_for_label(text, "color", COLOR_VALUES)
+    texture = _find_value_for_label(text, "texture", TEXTURE_VALUES)
+    material = _find_value_for_label(text, "material", MATERIAL_VALUES)
+    size = _find_value_for_label(text, "size", SIZE_VALUES)
+    shape = _find_value_for_label(text, "shape", SHAPE_VALUES)
+
+    if not any([color, texture, material, size, shape]):
+        return None
+
+    return {
+        "visual": {
+            "color": color or "unknown",
+            "texture": texture or "unknown",
+            "material": material or "unknown",
+        },
+        "physical": {
+            "size": size or "medium",
+            "shape": shape or "irregular",
+        },
+        "confidence": 0.2,
+    }
 
 
 def extract_gemini_content(result: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any]]:
@@ -210,6 +293,7 @@ Important instructions:
 2. Choose the MOST appropriate single value for each attribute
 3. Base your analysis on what is visible in the image
 4. If uncertain, choose the closest matching option
+5. Do not include reasoning or explanations. Output JSON only.
 
 Respond with ONLY a valid JSON object in this exact format (no markdown, no extra text):
 {{
@@ -261,8 +345,10 @@ async def suggest_node_attributes(
     try:
         # Check if API key is configured
         if provider_name == "kimi":
-            if not settings.nvidia_api_key:
-                raise ValueError("NVIDIA_API_KEY not configured in environment")
+            api_key = settings.nvidia_api_key or settings.kimi_api_key
+            if not api_key:
+                raise ValueError("NVIDIA_API_KEY or KIMI_API_KEY not configured in environment")
+            key_source = "nvidia" if settings.nvidia_api_key else "kimi"
             model_name = model_name or settings.kimi_model
         elif provider_name == "openai":
             if not settings.openai_api_key:
@@ -339,11 +425,13 @@ async def suggest_node_attributes(
         prompt = build_attribute_prompt(category, frame_idx)
         debug_info['provider'] = provider_name
         debug_info['model'] = model_name
+        if provider_name == "kimi":
+            debug_info['key_source'] = key_source
 
         # Prepare request based on provider
         if provider_name == "kimi":
             headers = {
-                "Authorization": f"Bearer {settings.nvidia_api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json"
             }
@@ -450,10 +538,13 @@ async def suggest_node_attributes(
             if 'choices' not in result or len(result['choices']) == 0:
                 raise ValueError("No response from AI API")
             response_content, response_meta = extract_message_content(result)
+            finish_reason = result.get("choices", [{}])[0].get("finish_reason")
+            response_meta["finish_reason"] = finish_reason
         else:
             response_content, response_meta = extract_gemini_content(result)
         debug_info['response_meta'] = response_meta
         debug_info['response_content_present'] = bool(response_content)
+        debug_info['content_source'] = response_meta.get("content_source")
 
         # Parse JSON from content
         # Remove any markdown code blocks if present
@@ -473,8 +564,22 @@ async def suggest_node_attributes(
         try:
             suggestions = json.loads(content.strip())
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Kimi response as JSON: {content}")
-            raise ValueError(f"Invalid JSON response from AI: {e}")
+            candidate = extract_last_json_object(content)
+            if candidate:
+                try:
+                    suggestions = json.loads(candidate)
+                except json.JSONDecodeError:
+                    suggestions = None
+            else:
+                suggestions = None
+            if suggestions is None:
+                inferred = infer_attributes_from_text(content)
+                if inferred:
+                    suggestions = inferred
+                    debug_info["heuristic_extraction"] = True
+                else:
+                    logger.error(f"Failed to parse Kimi response as JSON: {content}")
+                    raise ValueError(f"Invalid JSON response from AI: {e}")
 
         # Validate that all required fields are present
         if 'visual' not in suggestions or 'physical' not in suggestions:

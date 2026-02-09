@@ -62,6 +62,7 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
   const aiSuggestionStatusByNode = useAiSuggestionStatusByNode();
   const aiSuggestionSourceByNode = useAiSuggestionSourceByNode();
   const aiProvider = useAppStore((state) => state.aiProvider);
+  const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
   const setAiSuggestion = useAppStore((state) => state.setAiSuggestion);
   const clearAiSuggestion = useAppStore((state) => state.clearAiSuggestion);
   const [aiSuggestions, setAiSuggestions] = useState<AttributeSuggestionResponse | null>(null);
@@ -279,7 +280,11 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
     }
 
     if (Object.keys(changes).length === 0) {
-      onCancel();
+      onSave({
+        visual: { color, texture, material },
+        physical: { size, shape },
+        is_static: isStatic,
+      });
       return;
     }
 

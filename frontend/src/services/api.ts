@@ -84,6 +84,13 @@ export const videosApi = {
   getCameraMotion: (videoId: string): Promise<CameraMotion | null> => {
     return fetchJson(`${API_BASE}/videos/${videoId}/camera-motion`);
   },
+
+  updateStatus: (videoId: string, status: string): Promise<{ video_id: string; status: string }> => {
+    return fetchJson(`${API_BASE}/videos/${videoId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    });
+  },
 };
 
 // Edges API
