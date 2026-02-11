@@ -34,7 +34,8 @@ export function RevisionHistory({ revisions }: RevisionHistoryProps) {
             </span>
           </div>
 
-          {revision.action === 'modify' && (
+          {(revision.action === 'modify' || revision.action === 'accept') &&
+            (revision.new_predicate || revision.new_time_periods || revision.new_time_period || revision.new_attributes) && (
             <div className="text-xs space-y-1 mt-2">
               {revision.original_predicate && revision.new_predicate && (
                 <div>

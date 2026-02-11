@@ -48,6 +48,18 @@ class RevisionTracker:
         if video is None:
             raise ValueError(f"Video not found: {annotation.video_id}")
 
+        new_time_periods = None
+        if annotation.new_time_periods is not None:
+            new_time_periods = [tp.model_dump() for tp in annotation.new_time_periods]
+        elif annotation.new_time_period is not None:
+            new_time_periods = [annotation.new_time_period.model_dump()]
+
+        new_time_period = None
+        if new_time_periods:
+            new_time_period = self._merge_time_periods(new_time_periods)
+        elif annotation.new_time_period is not None:
+            new_time_period = annotation.new_time_period.model_dump()
+
         revision = EdgeRevision(
             video_id=video.id,
             edge_id=annotation.edge_id,
@@ -55,15 +67,33 @@ class RevisionTracker:
             user_id=annotation.user_id,
             action="accept",
             original_predicate=original_edge.predicate,
+            new_predicate=annotation.new_predicate,
             original_time_period=original_edge.time_period.model_dump(),
             original_time_periods=self._edge_time_periods(original_edge),
+            new_time_period=new_time_period,
+            new_time_periods=new_time_periods,
             original_attributes=(
                 original_edge.attributes.model_dump()
                 if original_edge.attributes
                 else None
             ),
+            new_attributes=(
+                annotation.new_attributes.model_dump()
+                if annotation.new_attributes
+                else None
+            ),
             original_source=json.dumps(original_edge.source),
+            new_source=(
+                json.dumps(annotation.new_source)
+                if annotation.new_source is not None
+                else None
+            ),
             original_target=json.dumps(original_edge.target),
+            new_target=(
+                json.dumps(annotation.new_target)
+                if annotation.new_target is not None
+                else None
+            ),
             review_notes=annotation.notes,
         )
 

@@ -25,8 +25,9 @@ export interface NodeVisualAttributes {
 }
 
 export interface NodePhysicalAttributes {
-  size: string;
-  shape: string;
+  size?: string;
+  shape?: string;
+  age?: string;
 }
 
 export interface NodeAttributes {
@@ -101,6 +102,12 @@ export interface AnnotationAccept {
   edge_id: string;
   edge_type: EdgeType;
   user_id: number;
+  new_predicate?: string;
+  new_time_period?: TimePeriod;
+  new_time_periods?: TimePeriod[];
+  new_attributes?: MotionAttributes;
+  new_source?: string | string[];
+  new_target?: string | string[];
   notes?: string;
 }
 

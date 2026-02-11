@@ -32,10 +32,13 @@ class AnnotationService:
 
     async def accept_edge(self, annotation: AnnotationAccept) -> dict:
         """Accept an edge as-is."""
-        # Get the original edge
+        # Get the current edge state (VSG edge or created edge)
         edge = self.vsg_loader.get_edge_by_id(annotation.edge_id)
         if edge is None:
-            raise ValueError(f"Edge not found: {annotation.edge_id}")
+            effective_edges = await self.get_edges_with_revisions()
+            edge = next((e for e in effective_edges if e.edge_id == annotation.edge_id), None)
+            if edge is None:
+                raise ValueError(f"Edge not found: {annotation.edge_id}")
 
         # Record the acceptance
         revision = await self.tracker.record_accept(annotation, edge)
@@ -144,51 +147,39 @@ class AnnotationService:
         """Get the current state of a created edge from the database.
 
         For created edges (not in VSG), this builds an EdgeResponse from
-        the latest revision data.
+        revision history.
         """
         import json
         from backend.models.schemas import MotionAttributes, TimePeriod
-
-        # Get the latest revision for this edge
-        latest = await self.tracker.get_latest_revision(self._video_id, edge_id)
-        if latest is None:
-            return None
-
-        # Only handle create/modify actions (not accept/reject which are for VSG edges)
-        if latest.action not in ("create", "modify"):
-            return None
-
-        # For "create" revision, the new_* fields are the initial state
-        # For "modify" revision, the new_* fields are the current state (or None if unchanged)
-        # We need to trace back to get the full current state
-
-        # Get the original create revision to get base values
-        all_revisions = await self.tracker.get_edge_history(self._video_id, edge_id)
-        if not all_revisions:
-            return None
-
-        # Find the create revision (oldest one with action=create)
         from backend.models.database import EdgeRevision, Video
 
-        create_rev = None
-        for rev in reversed(all_revisions):  # oldest first
-            if rev.action == "create":
-                # Need to get the actual EdgeRevision object, not RevisionResponse
-                video_result = await self.session.execute(
-                    select(Video).where(Video.video_id == self._video_id)
-                )
-                video = video_result.scalar_one_or_none()
-                if video:
-                    result = await self.session.execute(
-                        select(EdgeRevision).where(EdgeRevision.id == rev.id)
-                    )
-                    create_rev = result.scalar_one_or_none()
-                break
+        video_result = await self.session.execute(
+            select(Video).where(Video.video_id == self._video_id)
+        )
+        video = video_result.scalar_one_or_none()
+        if video is None:
+            return None
 
+        result = await self.session.execute(
+            select(EdgeRevision)
+            .where(
+                EdgeRevision.video_id == video.id,
+                EdgeRevision.edge_id == edge_id,
+            )
+            .order_by(EdgeRevision.created_at.asc(), EdgeRevision.id.asc())
+        )
+        revisions = list(result.scalars().all())
+        if not revisions:
+            return None
+
+        latest = revisions[-1]
+        if latest.action == "delete":
+            return None
+
+        create_rev = next((rev for rev in revisions if rev.action == "create"), None)
         if create_rev is None:
             return None
 
-        # Start with create revision values
         source = json.loads(create_rev.new_source) if create_rev.new_source else []
         target = json.loads(create_rev.new_target) if create_rev.new_target else []
         predicate = create_rev.new_predicate or ""
@@ -199,26 +190,26 @@ class AnnotationService:
         )
         attributes_dict = create_rev.new_attributes
 
-        # Apply any subsequent modifications
-        if latest.action == "modify" and latest.id != create_rev.id:
-            # Get the latest revision object
-            result = await self.session.execute(
-                select(EdgeRevision).where(EdgeRevision.id == latest.id)
-            )
-            modify_rev = result.scalar_one_or_none()
-            if modify_rev:
-                if modify_rev.new_predicate:
-                    predicate = modify_rev.new_predicate
-                if modify_rev.new_time_periods:
-                    time_periods_dict = modify_rev.new_time_periods
-                elif modify_rev.new_time_period:
-                    time_periods_dict = [modify_rev.new_time_period]
-                if modify_rev.new_attributes:
-                    attributes_dict = modify_rev.new_attributes
-                if modify_rev.new_source:
-                    source = json.loads(modify_rev.new_source)
-                if modify_rev.new_target:
-                    target = json.loads(modify_rev.new_target)
+        for rev in revisions:
+            if rev.id == create_rev.id:
+                continue
+            if rev.action == "delete":
+                return None
+            if rev.action not in ("modify", "accept"):
+                continue
+
+            if rev.new_predicate is not None:
+                predicate = rev.new_predicate
+            if rev.new_time_periods is not None:
+                time_periods_dict = rev.new_time_periods
+            elif rev.new_time_period is not None:
+                time_periods_dict = [rev.new_time_period]
+            if rev.new_attributes is not None:
+                attributes_dict = rev.new_attributes
+            if rev.new_source is not None:
+                source = json.loads(rev.new_source)
+            if rev.new_target is not None:
+                target = json.loads(rev.new_target)
 
         # Build and return EdgeResponse
         time_periods = [TimePeriod(**tp) for tp in time_periods_dict]
@@ -332,22 +323,28 @@ class AnnotationService:
             edge.has_revision = True
             edge.revision_action = latest.action
 
-            # Apply modifications if this is a "modify" action
-            if latest.action == "modify":
-                if latest.new_predicate:
+            # Apply accepted/modified values if present.
+            if latest.action in ("modify", "accept"):
+                if latest.new_predicate is not None:
                     edge.predicate = latest.new_predicate
-                if latest.new_time_periods:
+                if latest.new_time_periods is not None:
                     from backend.models.schemas import TimePeriod
                     periods = [TimePeriod(**tp) for tp in latest.new_time_periods]
                     edge.time_periods = periods
                     edge.time_period = self._merge_time_periods(periods)
-                elif latest.new_time_period:
+                elif latest.new_time_period is not None:
                     from backend.models.schemas import TimePeriod
                     edge.time_period = TimePeriod(**latest.new_time_period)
                     edge.time_periods = [edge.time_period]
-                if latest.new_attributes:
+                if latest.new_attributes is not None:
                     from backend.models.schemas import MotionAttributes
                     edge.attributes = MotionAttributes(**latest.new_attributes)
+                if latest.new_source is not None:
+                    import json
+                    edge.source = json.loads(latest.new_source)
+                if latest.new_target is not None:
+                    import json
+                    edge.target = json.loads(latest.new_target)
 
         return edge
 
@@ -387,19 +384,25 @@ class AnnotationService:
                 edge.has_revision = True
                 edge.revision_action = rev.action
 
-                # Apply modifications if this is a "modify" action
-                if rev.action == "modify":
-                    if rev.new_predicate:
+                # Apply accepted/modified values if present.
+                if rev.action in ("modify", "accept"):
+                    if rev.new_predicate is not None:
                         edge.predicate = rev.new_predicate
-                    if rev.new_time_periods:
+                    if rev.new_time_periods is not None:
                         periods = [TimePeriod(**tp) for tp in rev.new_time_periods]
                         edge.time_periods = periods
                         edge.time_period = self._merge_time_periods(periods)
-                    elif rev.new_time_period:
+                    elif rev.new_time_period is not None:
                         edge.time_period = TimePeriod(**rev.new_time_period)
                         edge.time_periods = [edge.time_period]
-                    if rev.new_attributes:
+                    if rev.new_attributes is not None:
                         edge.attributes = MotionAttributes(**rev.new_attributes)
+                    if rev.new_source is not None:
+                        import json
+                        edge.source = json.loads(rev.new_source)
+                    if rev.new_target is not None:
+                        import json
+                        edge.target = json.loads(rev.new_target)
 
         # Filter out deleted edges
         edges = [e for e in edges if e.edge_id not in deleted_ids]
@@ -485,23 +488,22 @@ class AnnotationService:
             attributes_dict = rev.new_attributes
             revision_action = "create"
 
-            # Check if there's a later modification for this edge
+            # Check if there's a later accepted/modified state for this edge
             if revision_map and rev.edge_id in revision_map:
                 latest_rev = revision_map[rev.edge_id]
-                if latest_rev.action == "modify":
-                    revision_action = "modify"
-                    # Apply modifications
-                    if latest_rev.new_predicate:
+                if latest_rev.action in ("modify", "accept"):
+                    revision_action = latest_rev.action
+                    if latest_rev.new_predicate is not None:
                         predicate = latest_rev.new_predicate
-                    if latest_rev.new_time_periods:
+                    if latest_rev.new_time_periods is not None:
                         time_periods_dict = latest_rev.new_time_periods
-                    elif latest_rev.new_time_period:
+                    elif latest_rev.new_time_period is not None:
                         time_periods_dict = [latest_rev.new_time_period]
-                    if latest_rev.new_attributes:
+                    if latest_rev.new_attributes is not None:
                         attributes_dict = latest_rev.new_attributes
-                    if latest_rev.new_source:
+                    if latest_rev.new_source is not None:
                         source = json.loads(latest_rev.new_source)
-                    if latest_rev.new_target:
+                    if latest_rev.new_target is not None:
                         target = json.loads(latest_rev.new_target)
 
             # Look up categories from node data

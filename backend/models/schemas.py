@@ -51,8 +51,9 @@ class NodeVisualAttributes(BaseModel):
 class NodePhysicalAttributes(BaseModel):
     """Physical attributes for a node."""
 
-    size: str = "medium"
-    shape: str = "unknown"
+    size: Optional[str] = None
+    shape: Optional[str] = None
+    age: Optional[str] = None
 
 
 class NodeAttributes(BaseModel):
@@ -232,6 +233,12 @@ class AnnotationAccept(BaseModel):
     edge_id: str
     edge_type: Literal["static", "dynamic", "fg_bg"]
     user_id: int
+    new_predicate: Optional[str] = None
+    new_time_period: Optional[TimePeriod] = None
+    new_time_periods: Optional[list[TimePeriod]] = None
+    new_attributes: Optional[MotionAttributes] = None
+    new_source: Optional[str | list[str]] = None
+    new_target: Optional[str | list[str]] = None
     notes: Optional[str] = None
 
 

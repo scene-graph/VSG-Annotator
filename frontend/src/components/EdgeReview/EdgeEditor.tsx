@@ -1,6 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import type { Edge, MotionAttributes, TimePeriod } from '../../types';
 import { usePredicates } from '../../hooks';
+import { useAIEdgeSuggestions } from '../../hooks/useAI';
+import { useAppStore } from '../../store';
+import type { EdgeSuggestionResponse } from '../../services/ai';
+import { EdgeAIDebugModal } from './EdgeAIDebugModal';
 
 interface EdgeEditorProps {
   edge: Edge;
@@ -9,20 +13,43 @@ interface EdgeEditorProps {
     predicate?: string;
     time_periods?: TimePeriod[];
     attributes?: MotionAttributes;
-  }) => void;
+  }) => void | Promise<void>;
+  onDelete: () => void | Promise<void>;
   onCancel: () => void;
+  isSaving?: boolean;
+  isDeleting?: boolean;
+  saveError?: string | null;
 }
 
 const VELOCITY_VALUES = ['stationary', 'very_slow', 'slow', 'moderate', 'fast', 'very_fast'];
 const DIRECTION_VALUES = ['none', 'up', 'down', 'left', 'right', 'forward', 'backward', 'toward_body', 'away_from_body', 'inward', 'outward', 'rotational'];
 const TRAJECTORY_VALUES = ['stable', 'straight', 'curved', 'arc', 'circular', 'zigzag', 'oscillating', 'irregular'];
 
-export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps) {
+export function EdgeEditor({
+  edge,
+  videoId,
+  onSave,
+  onDelete,
+  onCancel,
+  isSaving = false,
+  isDeleting = false,
+  saveError = null,
+}: EdgeEditorProps) {
   const [predicate, setPredicate] = useState(edge.predicate);
   const [segments, setSegments] = useState<TimePeriod[]>([]);
   const [velocity, setVelocity] = useState(edge.attributes?.velocity || 'moderate');
   const [direction, setDirection] = useState(edge.attributes?.direction || 'none');
   const [trajectory, setTrajectory] = useState(edge.attributes?.trajectory || 'curved');
+  const [aiFrame, setAiFrame] = useState(0);
+  const [aiSuggestion, setAiSuggestion] = useState<EdgeSuggestionResponse | null>(null);
+  const [debugMode, setDebugMode] = useState(true);
+  const [showDebugModal, setShowDebugModal] = useState(false);
+  const [debugInfo, setDebugInfo] = useState<any>(null);
+
+  const aiProvider = useAppStore((state) => state.aiProvider);
+  const currentFrame = useAppStore((state) => state.currentFrame);
+  const aiMutation = useAIEdgeSuggestions();
+  const abortRef = useRef<AbortController | null>(null);
 
   const normalizeSegments = (list: TimePeriod[]) => {
     const safe = list.length > 0 ? list : [edge.time_period];
@@ -44,14 +71,117 @@ export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps)
     setVelocity(edge.attributes?.velocity || 'moderate');
     setDirection(edge.attributes?.direction || 'none');
     setTrajectory(edge.attributes?.trajectory || 'curved');
+    setAiSuggestion(null);
   }, [edge.edge_id, edge.predicate, edge.time_period.start_frame, edge.time_period.end_frame,
       edge.time_periods,
       edge.attributes?.velocity, edge.attributes?.direction, edge.attributes?.trajectory]);
 
+  useEffect(() => {
+    setAiFrame(currentFrame);
+  }, [edge.edge_id, currentFrame]);
+
   const { data: predicatesData } = usePredicates(videoId, edge.edge_type);
   const predicates = predicatesData?.predicates || [];
+  const showSuggestionPanel = Boolean(aiSuggestion && !aiSuggestion.error);
+
+  const handleGetAISuggestions = async () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const result = await aiMutation.mutateAsync({
+        request: {
+          video_id: videoId,
+          edge_id: edge.edge_id,
+          frame_idx: aiFrame,
+          provider: aiProvider,
+          debug: debugMode,
+        },
+        signal: controller.signal,
+      });
+      setAiSuggestion(result);
+      if (debugMode) {
+        setDebugInfo({
+          request: {
+            video_id: videoId,
+            edge_id: edge.edge_id,
+            edge_type: edge.edge_type,
+            frame_idx: aiFrame,
+            provider: aiProvider,
+            resolved_frame_idx: result.resolved_frame_idx,
+            context_frames: result.context_frames,
+          },
+          context_images: result.context_images,
+          raw_request: result.raw_request,
+          raw_response: result.raw_response,
+          response_content: result.response_content,
+          processed_suggestions: !result.error
+            ? {
+                predicate: result.predicate,
+                confidence: result.confidence,
+                attributes: result.attributes,
+              }
+            : undefined,
+          error: result.error,
+          debug_info: result.debug_info,
+        });
+        setShowDebugModal(true);
+      }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return;
+      }
+      if (debugMode) {
+        setDebugInfo({
+          request: {
+            video_id: videoId,
+            edge_id: edge.edge_id,
+            edge_type: edge.edge_type,
+            frame_idx: aiFrame,
+            provider: aiProvider,
+          },
+          error: String(error),
+        });
+        setShowDebugModal(true);
+      }
+      alert(`Failed to get edge AI suggestions: ${error}`);
+    }
+  };
+
+  const applyAISuggestion = (attribute: 'predicate' | 'velocity' | 'direction' | 'trajectory', value: string) => {
+    if (attribute === 'predicate') {
+      setPredicate(value);
+      return;
+    }
+    if (attribute === 'velocity') {
+      setVelocity(value);
+      return;
+    }
+    if (attribute === 'direction') {
+      setDirection(value);
+      return;
+    }
+    setTrajectory(value);
+  };
+
+  const handleCancelAISuggestionRequest = () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  };
+
+  const handleDismissSuggestions = () => {
+    setAiSuggestion(null);
+  };
 
   const handleSave = () => {
+    if (isSaving) {
+      return;
+    }
     const changes: {
       predicate?: string;
       time_periods?: TimePeriod[];
@@ -77,11 +207,6 @@ export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps)
       if (velocity !== origAttrs.velocity || direction !== origAttrs.direction || trajectory !== origAttrs.trajectory) {
         changes.attributes = { velocity, direction, trajectory };
       }
-    }
-
-    if (Object.keys(changes).length === 0) {
-      onCancel();
-      return;
     }
 
     onSave(changes);
@@ -121,7 +246,14 @@ export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps)
   };
 
   return (
-    <div className="space-y-4">
+    <>
+      <EdgeAIDebugModal
+        isOpen={showDebugModal}
+        onClose={() => setShowDebugModal(false)}
+        debugInfo={debugInfo}
+      />
+
+      <div className="space-y-4">
       {/* Predicate */}
       <div>
         <label className="text-gray-400 text-xs uppercase block mb-1">Predicate</label>
@@ -187,73 +319,245 @@ export function EdgeEditor({ edge, videoId, onSave, onCancel }: EdgeEditorProps)
         ))}
       </div>
 
-      {/* Motion attributes (for dynamic edges) */}
-      {edge.edge_type === 'dynamic' && (
-        <div className="space-y-2">
-          <div className="text-gray-400 text-xs uppercase">Motion Attributes</div>
-
-          <div>
-            <label className="text-gray-500 text-xs block mb-1">Velocity</label>
-            <select
-              value={velocity}
-              onChange={(e) => setVelocity(e.target.value)}
-              className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+      {/* AI Suggestions */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="flex items-center gap-2 text-sm text-gray-400">
+            <input
+              type="checkbox"
+              checked={debugMode}
+              onChange={(e) => setDebugMode(e.target.checked)}
+              className="rounded"
+            />
+            Debug Mode
+          </label>
+          {debugInfo && (
+            <button
+              onClick={() => setShowDebugModal(true)}
+              className="text-xs text-purple-400 hover:text-purple-300"
             >
-              {VELOCITY_VALUES.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-gray-500 text-xs block mb-1">Direction</label>
-            <select
-              value={direction}
-              onChange={(e) => setDirection(e.target.value)}
-              className="w-full bg-gray-700 text-white rounded p-2 text-sm"
-            >
-              {DIRECTION_VALUES.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-gray-500 text-xs block mb-1">Trajectory</label>
-            <select
-              value={trajectory}
-              onChange={(e) => setTrajectory(e.target.value)}
-              className="w-full bg-gray-700 text-white rounded p-2 text-sm"
-            >
-              {TRAJECTORY_VALUES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </div>
+              View Last Debug Info
+            </button>
+          )}
         </div>
-      )}
+
+        <>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-gray-500 text-xs block mb-1">Center Frame</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={aiFrame}
+                  onChange={(e) => setAiFrame(Number(e.target.value))}
+                  className="w-full bg-gray-700 text-white rounded p-2 text-sm"
+                />
+              </div>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={() => setAiFrame(currentFrame)}
+                  className="w-full bg-gray-700 hover:bg-gray-600 text-white py-2 rounded text-sm"
+                >
+                  Use Current Frame ({currentFrame})
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleGetAISuggestions}
+              disabled={aiMutation.isPending}
+              className="mt-2 w-full bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 text-white py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
+            >
+              {aiMutation.isPending ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Getting AI Suggestions...
+                </>
+              ) : (
+                <>
+                  <span className="text-lg">✨</span>
+                  Get AI Suggestions
+                </>
+              )}
+            </button>
+            {aiMutation.isPending && (
+              <button
+                type="button"
+                onClick={handleCancelAISuggestionRequest}
+                className="mt-2 w-full bg-gray-700 hover:bg-gray-600 text-white py-2 px-4 rounded-lg transition-colors"
+              >
+                Cancel AI Request
+              </button>
+            )}
+
+            <div className="mt-2 text-xs text-gray-400">
+              Using AI model: {aiProvider} (configured default). Please review suggestions before saving.
+            </div>
+            <div className="mt-2 text-xs text-gray-400">
+              {edge.edge_type === 'static'
+                ? 'Static edge timeline is fixed to full video.'
+                : edge.edge_type === 'fg_bg'
+                ? 'Foreground-background edge timeline is fixed to full video.'
+                : 'Dynamic edge timeline is clamped to frames where both objects are visible.'}
+            </div>
+            <div className="text-xs text-gray-500">
+              AI uses the selected center frame shown above.
+            </div>
+
+            {aiSuggestion?.error && (
+              <div className="mt-2 text-xs text-red-400 bg-red-900/20 border border-red-700 rounded p-2">
+                Error: {aiSuggestion.error}
+              </div>
+            )}
+
+            <div className="mt-3 p-3 bg-gray-800/60 border border-gray-700 rounded-lg">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium text-gray-200">
+                  {showSuggestionPanel && aiSuggestion
+                    ? `AI Suggestions (Confidence: ${(aiSuggestion.confidence * 100).toFixed(0)}%)`
+                    : 'Original Only'}
+                </span>
+              </div>
+              {showSuggestionPanel && (
+                <div className="text-xs text-gray-400 mb-2">
+                  Click an AI value to apply it. Edit original values directly in the middle column.
+                </div>
+              )}
+              <div className={`grid ${showSuggestionPanel ? 'grid-cols-3' : 'grid-cols-2'} gap-2 text-xs`}>
+                <div className="text-gray-500">Attribute</div>
+                <div className="text-gray-400">Original</div>
+                {showSuggestionPanel && <div className="text-purple-300">AI</div>}
+                {[
+                  {
+                    label: 'predicate',
+                    value: predicate,
+                    setValue: setPredicate,
+                    options: predicates,
+                    ai: aiSuggestion?.predicate,
+                  },
+                  ...(edge.edge_type === 'dynamic'
+                    ? [
+                        {
+                          label: 'velocity',
+                          value: velocity,
+                          setValue: setVelocity,
+                          options: VELOCITY_VALUES,
+                          ai: aiSuggestion?.attributes?.velocity,
+                        },
+                        {
+                          label: 'direction',
+                          value: direction,
+                          setValue: setDirection,
+                          options: DIRECTION_VALUES,
+                          ai: aiSuggestion?.attributes?.direction,
+                        },
+                        {
+                          label: 'trajectory',
+                          value: trajectory,
+                          setValue: setTrajectory,
+                          options: TRAJECTORY_VALUES,
+                          ai: aiSuggestion?.attributes?.trajectory,
+                        },
+                      ]
+                    : []),
+                ].map((row) => {
+                  const hasAi = Boolean(showSuggestionPanel && row.ai);
+                  const different = hasAi ? row.value !== row.ai : false;
+                  return (
+                    <Fragment key={row.label}>
+                      <div className="text-gray-500">{row.label}</div>
+                      <div>
+                        <select
+                          value={row.value}
+                          onChange={(e) => row.setValue(e.target.value)}
+                          className="w-full bg-gray-700 text-white rounded p-1.5 text-sm"
+                        >
+                          {row.options.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                          {!row.options.includes(row.value) && (
+                            <option value={row.value}>{row.value}</option>
+                          )}
+                        </select>
+                      </div>
+                      {hasAi && (
+                        <button
+                          type="button"
+                          onClick={() => applyAISuggestion(row.label as 'predicate' | 'velocity' | 'direction' | 'trajectory', row.ai as string)}
+                          className={different
+                            ? 'text-purple-200 bg-purple-900/30 rounded px-2 py-1 text-left'
+                            : 'text-gray-400 px-2 py-1 text-left'}
+                          title="Click to apply AI value"
+                        >
+                          {row.ai}
+                        </button>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </div>
+            </div>
+
+            {showSuggestionPanel && aiSuggestion && (
+              <div className="mt-2 text-xs text-gray-400">
+                AI frame: {aiSuggestion.resolved_frame_idx ?? aiFrame}
+                {aiSuggestion.context_frames?.length
+                  ? ` | Context: ${aiSuggestion.context_frames.join(', ')}`
+                  : ''}
+              </div>
+            )}
+        </>
+      </div>
 
       {/* Action buttons */}
+      {saveError && (
+        <div className="text-xs text-red-400 bg-red-900/20 border border-red-700 rounded p-2">
+          Save failed: {saveError}
+        </div>
+      )}
       <div className="flex gap-2">
         <button
           onClick={handleSave}
-          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded font-semibold"
+          disabled={isSaving || isDeleting}
+          className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white py-2 rounded font-semibold"
         >
-          Save Changes
+          {isSaving ? 'Saving...' : 'Save'}
+        </button>
+        {aiSuggestion && (
+          <button
+            type="button"
+            onClick={handleDismissSuggestions}
+            disabled={isSaving || isDeleting}
+            className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded font-semibold"
+          >
+            Dismiss AI Suggestions
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={isSaving || isDeleting}
+          className="px-3 py-2 bg-red-900 hover:bg-red-800 disabled:opacity-50 text-red-200 rounded font-semibold transition-colors"
+          title="Permanently delete this edge"
+        >
+          {isDeleting ? 'Deleting...' : 'Delete'}
         </button>
         <button
           onClick={onCancel}
-          className="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-2 rounded font-semibold"
+          disabled={isSaving || isDeleting}
+          className="flex-1 bg-gray-600 hover:bg-gray-700 disabled:bg-gray-800 text-white py-2 rounded font-semibold"
         >
           Cancel
         </button>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
