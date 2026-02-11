@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Edge, MotionAttributes, TimePeriod } from '../../types';
 import { useAppStore, useCurrentUser, useSelectedEdge, useNodes, useEdgeCreation } from '../../store';
-import { useAcceptEdge, useRejectEdge, useModifyEdge, useDeleteEdge, useEdgeHistory } from '../../hooks';
+import { useAcceptEdge, useDeleteEdge, useEdgeHistory } from '../../hooks';
 import { EdgeEditor } from './EdgeEditor';
 import { EdgeCreator } from './EdgeCreator';
 import { ValidationReasoning } from './ValidationReasoning';
@@ -27,19 +27,28 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
   const startEdgeCreation = useAppStore((state) => state.startEdgeCreation);
   const cancelEdgeCreation = useAppStore((state) => state.cancelEdgeCreation);
 
-  const [isEditing, setIsEditing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showConfidence, setShowConfidence] = useState(false);
+  const [isSavingEdge, setIsSavingEdge] = useState(false);
+  const [edgeSaveError, setEdgeSaveError] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
 
   const acceptMutation = useAcceptEdge();
-  const rejectMutation = useRejectEdge();
-  const modifyMutation = useModifyEdge();
   const deleteMutation = useDeleteEdge();
 
   const { data: history } = useEdgeHistory(
     videoId,
     selectedEdge?.edge_id
   );
+
+  // Reset panel UI state whenever a new edge is selected.
+  useEffect(() => {
+    if (selectedEdge) {
+      setShowConfidence(false);
+      setShowValidationReasoning(false);
+      setEdgeSaveError(null);
+    }
+  }, [selectedEdge?.edge_id]);
 
   // Show EdgeCreator when in creation mode
   if (edgeCreation.isCreating) {
@@ -83,70 +92,6 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     }
   };
 
-  const handleAccept = async () => {
-    if (!currentUser) {
-      alert('Please select a user first');
-      return;
-    }
-
-    await acceptMutation.mutateAsync({
-      video_id: videoId,
-      edge_id: selectedEdge.edge_id,
-      edge_type: selectedEdge.edge_type,
-      user_id: currentUser.id,
-      notes: notes || undefined,
-    });
-
-    // Update selected edge to reflect accept action immediately
-    const updatedEdge: Edge = {
-      ...selectedEdge,
-      has_revision: true,
-      revision_action: 'accept',
-    };
-    setSelectedEdge(updatedEdge);
-
-    // Also update the edges array so EdgeTimeline reflects changes immediately
-    const currentEdges = useAppStore.getState().edges;
-    const updatedEdges = currentEdges.map(e =>
-      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
-    );
-    setEdges(updatedEdges);
-
-    setNotes('');
-  };
-
-  const handleReject = async () => {
-    if (!currentUser) {
-      alert('Please select a user first');
-      return;
-    }
-
-    await rejectMutation.mutateAsync({
-      video_id: videoId,
-      edge_id: selectedEdge.edge_id,
-      edge_type: selectedEdge.edge_type,
-      user_id: currentUser.id,
-      notes: notes || undefined,
-    });
-
-    // Update selected edge to reflect reject action immediately
-    const updatedEdge: Edge = {
-      ...selectedEdge,
-      has_revision: true,
-      revision_action: 'reject',
-    };
-    setSelectedEdge(updatedEdge);
-
-    // Also update the edges array so EdgeTimeline reflects changes immediately
-    const currentEdges = useAppStore.getState().edges;
-    const updatedEdges = currentEdges.map(e =>
-      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
-    );
-    setEdges(updatedEdges);
-
-    setNotes('');
-  };
-
   const mergeTimePeriods = (periods: TimePeriod[]) => {
     if (periods.length === 0) return { start_frame: 0, end_frame: 0 };
     return {
@@ -155,13 +100,16 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     };
   };
 
-  const handleModify = (changes: {
+  const handleSaveAccept = async (changes: {
     predicate?: string;
     time_periods?: TimePeriod[];
     attributes?: MotionAttributes;
   }) => {
     if (!currentUser) {
       alert('Please select a user first');
+      return;
+    }
+    if (isSavingEdge) {
       return;
     }
 
@@ -171,38 +119,44 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
         : [selectedEdge.time_period]);
     const mergedPeriod = mergeTimePeriods(updatedPeriods);
 
-    // Build the updated edge FIRST
-    const updatedEdge: Edge = {
-      ...selectedEdge,
-      predicate: changes.predicate ?? selectedEdge.predicate,
-      time_period: mergedPeriod,
-      time_periods: updatedPeriods,
-      attributes: changes.attributes ?? selectedEdge.attributes,
-      has_revision: true,
-      revision_action: 'modify',
-    };
+    setEdgeSaveError(null);
+    setIsSavingEdge(true);
+    try {
+      await acceptMutation.mutateAsync({
+        video_id: videoId,
+        edge_id: selectedEdge.edge_id,
+        edge_type: selectedEdge.edge_type,
+        user_id: currentUser.id,
+        new_predicate: changes.predicate,
+        new_time_periods: changes.time_periods,
+        new_attributes: changes.attributes,
+        notes: notes || undefined,
+      });
 
-    // Update store immediately (optimistic update)
-    setSelectedEdge(updatedEdge);
-    const currentEdges = useAppStore.getState().edges;
-    const updatedEdges = currentEdges.map(e =>
-      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
-    );
-    setEdges(updatedEdges);
-    setIsEditing(false);
-    setNotes('');
+      // Build and apply updated edge only after server confirms save+accept.
+      const updatedEdge: Edge = {
+        ...selectedEdge,
+        predicate: changes.predicate ?? selectedEdge.predicate,
+        time_period: mergedPeriod,
+        time_periods: updatedPeriods,
+        attributes: changes.attributes ?? selectedEdge.attributes,
+        has_revision: true,
+        revision_action: 'accept',
+      };
 
-    // Send API call in background (non-blocking)
-    modifyMutation.mutate({
-      video_id: videoId,
-      edge_id: selectedEdge.edge_id,
-      edge_type: selectedEdge.edge_type,
-      user_id: currentUser.id,
-      new_predicate: changes.predicate,
-      new_time_periods: changes.time_periods,
-      new_attributes: changes.attributes,
-      notes: notes || undefined,
-    });
+      setSelectedEdge(updatedEdge);
+      const currentEdges = useAppStore.getState().edges;
+      const updatedEdges = currentEdges.map(e =>
+        e.edge_id === selectedEdge.edge_id ? updatedEdge : e
+      );
+      setEdges(updatedEdges);
+      setNotes('');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setEdgeSaveError(message);
+    } finally {
+      setIsSavingEdge(false);
+    }
   };
 
   const handleDelete = async () => {
@@ -326,69 +280,55 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
           </div>
         </div>
 
-        {/* Motion attributes (for dynamic edges) */}
-        {selectedEdge.attributes && (
-          <div className="bg-gray-700 rounded p-3">
-            <div className="text-gray-400 text-xs uppercase mb-2">Motion Attributes</div>
-            <div className="space-y-2">
-              {/* Velocity Row */}
-              <div className="flex items-center justify-between">
-                <span className="text-gray-400 text-sm">Velocity</span>
-                <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-sm">
-                  {selectedEdge.attributes.velocity}
-                </span>
-              </div>
-              {/* Direction Row */}
-              <div className="flex items-center justify-between">
-                <span className="text-gray-400 text-sm">Direction</span>
-                <span className="px-2 py-0.5 rounded bg-green-500/20 text-green-400 text-sm">
-                  {selectedEdge.attributes.direction}
-                </span>
-              </div>
-              {/* Trajectory Row */}
-              <div className="flex items-center justify-between">
-                <span className="text-gray-400 text-sm">Trajectory</span>
-                <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-400 text-sm">
-                  {selectedEdge.attributes.trajectory}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Confidence & validation */}
-        <div className="bg-gray-700 rounded p-3">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-gray-400 text-xs uppercase">Confidence</div>
-            <div className="flex items-center gap-2">
-              <span className={clsx(
-                'px-2 py-0.5 rounded text-xs',
-                selectedEdge.validated ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-              )}>
-                {selectedEdge.validated ? 'Validated' : 'Not Validated'}
-              </span>
-              <span className={clsx(
-                'px-2 py-0.5 rounded text-xs',
-                selectedEdge.extraction_round === 0 ? 'bg-blue-500/20 text-blue-400' : 'bg-yellow-500/20 text-yellow-400'
-              )}>
-                {selectedEdge.extraction_round === 0 ? 'PVSG GT' : 'GPT Extracted'}
-              </span>
+        <div className="bg-gray-700 rounded overflow-hidden">
+          <button
+            onClick={() => setShowConfidence(!showConfidence)}
+            className="w-full flex items-center justify-between p-3 hover:bg-gray-600 transition-colors"
+          >
+            <span className="text-gray-400 text-xs uppercase">Confidence</span>
+            <svg
+              className={clsx('w-4 h-4 text-gray-400 transition-transform', showConfidence && 'rotate-180')}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          {showConfidence && (
+            <div className="px-3 pb-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className={clsx(
+                  'px-2 py-0.5 rounded text-xs',
+                  selectedEdge.validated ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                )}>
+                  {selectedEdge.validated ? 'Validated' : 'Not Validated'}
+                </span>
+                <span className={clsx(
+                  'px-2 py-0.5 rounded text-xs',
+                  selectedEdge.extraction_round === 0 ? 'bg-blue-500/20 text-blue-400' : 'bg-yellow-500/20 text-yellow-400'
+                )}>
+                  {selectedEdge.extraction_round === 0 ? 'PVSG GT' : 'GPT Extracted'}
+                </span>
+              </div>
+              <div className="flex gap-4">
+                <div>
+                  <span className="text-gray-400 text-xs">Overall:</span>
+                  <span className="text-white ml-1 font-mono">{selectedEdge.confidence.toFixed(2)}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 text-xs">Round 1:</span>
+                  <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round1.toFixed(2)}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 text-xs">Round 2:</span>
+                  <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round2.toFixed(2)}</span>
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="flex gap-4">
-            <div>
-              <span className="text-gray-400 text-xs">Overall:</span>
-              <span className="text-white ml-1 font-mono">{selectedEdge.confidence.toFixed(2)}</span>
-            </div>
-            <div>
-              <span className="text-gray-400 text-xs">Round 1:</span>
-              <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round1.toFixed(2)}</span>
-            </div>
-            <div>
-              <span className="text-gray-400 text-xs">Round 2:</span>
-              <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round2.toFixed(2)}</span>
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Validation Reasoning */}
@@ -426,46 +366,20 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
         />
       </div>
 
-      {/* Action buttons */}
-      {isEditing ? (
-        <EdgeEditor
-          edge={selectedEdge}
-          videoId={videoId}
-          onSave={handleModify}
-          onCancel={() => setIsEditing(false)}
-        />
-      ) : (
-        <div className="flex gap-2">
-          <button
-            onClick={handleAccept}
-            disabled={acceptMutation.isPending}
-            className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-green-800 text-white py-2 rounded font-semibold"
-          >
-            Accept
-          </button>
-          <button
-            onClick={handleReject}
-            disabled={rejectMutation.isPending}
-            className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-red-800 text-white py-2 rounded font-semibold"
-          >
-            Reject
-          </button>
-          <button
-            onClick={() => setIsEditing(true)}
-            className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white py-2 rounded font-semibold"
-          >
-            Modify
-          </button>
-          <button
-            onClick={handleDelete}
-            disabled={deleteMutation.isPending}
-            className="px-3 py-2 bg-red-900 hover:bg-red-800 disabled:opacity-50 text-red-200 rounded font-semibold transition-colors"
-            title="Permanently delete this edge"
-          >
-            {deleteMutation.isPending ? '...' : 'Delete'}
-          </button>
-        </div>
-      )}
+      {/* Single-layer editing: Save both updates and accepts */}
+      <EdgeEditor
+        edge={selectedEdge}
+        videoId={videoId}
+        onSave={handleSaveAccept}
+        onDelete={handleDelete}
+        onCancel={() => {
+          setEdgeSaveError(null);
+          setSelectedEdge(null);
+        }}
+        isSaving={isSavingEdge}
+        isDeleting={deleteMutation.isPending}
+        saveError={edgeSaveError}
+      />
 
       {/* History toggle */}
       <div className="mt-4">

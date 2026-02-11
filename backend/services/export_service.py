@@ -86,7 +86,12 @@ class ExportService:
                 continue
 
             new_edge = self._build_edge_from_revision(rev)
-            if latest_rev is not None and latest_rev.action == "modify" and apply_modifications:
+            if (
+                latest_rev is not None
+                and latest_rev.action in {"modify", "accept"}
+                and apply_modifications
+                and self._revision_has_edge_changes(latest_rev)
+            ):
                 new_edge = self._apply_edge_modifications(new_edge, latest_rev)
             if latest_rev is not None and latest_rev.action in {"modify", "accept", "create"}:
                 new_edge = self._mark_edge_validated(new_edge)
@@ -318,8 +323,13 @@ class ExportService:
                     result.append(edge)
                 continue
 
-            # Apply modifications
-            if rev is not None and rev.action == "modify" and apply_modifications:
+            # Apply accepted/modified values if requested.
+            if (
+                rev is not None
+                and rev.action in {"modify", "accept"}
+                and apply_modifications
+                and self._revision_has_edge_changes(rev)
+            ):
                 edge = self._apply_edge_modifications(edge.copy(), rev)
 
             if rev is not None and rev.action in {"modify", "accept"}:
@@ -347,6 +357,21 @@ class ExportService:
             edge["target"] = json.loads(rev.new_target)
         edge["human_modified"] = True
         return edge
+
+    @staticmethod
+    def _revision_has_edge_changes(rev: Any) -> bool:
+        """Return True when a revision contains explicit edge field updates."""
+        return any(
+            value is not None
+            for value in (
+                rev.new_predicate,
+                rev.new_time_periods,
+                rev.new_time_period,
+                rev.new_attributes,
+                rev.new_source,
+                rev.new_target,
+            )
+        )
 
     def _mark_edge_validated(self, edge: dict) -> dict:
         """Mark edge as human validated."""
