@@ -20,6 +20,8 @@ from backend.models.schemas import (
     TimePeriod,
 )
 
+PERSON_CATEGORIES = {"person", "adult", "child", "baby"}
+
 
 class VSGLoader:
     """Load and parse Jan20 schema VSG files."""
@@ -34,9 +36,25 @@ class VSGLoader:
     def load(self) -> dict[str, Any]:
         """Load the VSG file."""
         if self._data is None:
-            with open(self.vsg_path) as f:
-                self._data = json.load(f)
+            try:
+                with open(self.vsg_path) as f:
+                    self._data = json.load(f)
+            except OSError as e:
+                normalized = self._normalize_outputs_path(self.vsg_path)
+                if normalized != self.vsg_path and normalized.exists():
+                    self.vsg_path = normalized
+                    with open(self.vsg_path) as f:
+                        self._data = json.load(f)
+                else:
+                    raise e
         return self._data
+
+    @staticmethod
+    def _normalize_outputs_path(path: Path) -> Path:
+        value = str(path)
+        while "/outputs/outputs" in value:
+            value = value.replace("/outputs/outputs", "/outputs")
+        return Path(value)
 
     @property
     def data(self) -> dict[str, Any]:
@@ -143,10 +161,13 @@ class VSGLoader:
         visual = attrs.get("visual", {})
         physical = attrs.get("physical", {})
 
+        category = node_data.get("category", "unknown")
+        is_person = category.lower().strip() in PERSON_CATEGORIES
+
         return NodeResponse(
             node_id=node_data["node_id"],
             object_id=node_data.get("object_id", 0),
-            category=node_data.get("category", "unknown"),
+            category=category,
             is_static=is_static,
             attributes=NodeAttributes(
                 visual=NodeVisualAttributes(
@@ -155,8 +176,9 @@ class VSGLoader:
                     material=visual.get("material", "unknown"),
                 ),
                 physical=NodePhysicalAttributes(
-                    size=physical.get("size", "medium"),
-                    shape=physical.get("shape", "unknown"),
+                    size=None if is_person else physical.get("size", "medium"),
+                    shape=None if is_person else physical.get("shape", "unknown"),
+                    age=physical.get("age", "unknown") if is_person else None,
                 ),
             ),
             bboxes_by_frame=bboxes,

@@ -1,9 +1,11 @@
-"""AI API routes for attribute suggestions."""
+"""AI API routes for node/edge AI suggestions."""
 
+import asyncio
 import logging
-from typing import Optional
+from contextlib import suppress
+from typing import Optional, Awaitable, TypeVar
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,10 +13,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.database import get_db, Video
 from backend.config import settings
 from backend.core.vsg_loader import VSGLoader
-from backend.services.ai_service import suggest_node_attributes
+from backend.services.annotation_service import AnnotationService
+from backend.services.ai_service import suggest_node_attributes, suggest_edge_annotation
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+async def _await_with_disconnect_cancel(http_request: Request, op: Awaitable[T]) -> T:
+    """Cancel long-running AI work if the HTTP client disconnects."""
+    task = asyncio.create_task(op)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=0.2)
+            if task in done:
+                return task.result()
+            if await http_request.is_disconnected():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                raise HTTPException(status_code=499, detail="Client disconnected")
+    except Exception:
+        if not task.done():
+            task.cancel()
+        raise
 
 
 class AttributeSuggestionRequest(BaseModel):
@@ -43,9 +66,51 @@ class AttributeSuggestionResponse(BaseModel):
     response_content: Optional[str] = Field(None, description="Extracted AI response content")
 
 
+class EdgeSuggestionRequest(BaseModel):
+    """Request model for edge AI suggestions."""
+    video_id: str = Field(..., description="Video identifier")
+    edge_id: str = Field(..., description="Edge identifier")
+    frame_idx: int = Field(..., ge=0, description="Center frame index for visual analysis")
+    debug: bool = Field(False, description="Enable debug mode")
+    provider: Optional[str] = Field(None, description="AI provider (kimi, openai, gemini)")
+    model: Optional[str] = Field(None, description="Override model name")
+
+
+class EdgeMotionSuggestion(BaseModel):
+    """Motion attributes for dynamic edges."""
+    velocity: str
+    direction: str
+    trajectory: str
+
+
+class EdgeSuggestionResponse(BaseModel):
+    """Response model for edge AI suggestions."""
+    edge_id: str
+    edge_type: str
+    predicate: str
+    time_periods: list[dict] = Field(default_factory=list)
+    attributes: Optional[EdgeMotionSuggestion] = None
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    resolved_frame_idx: Optional[int] = Field(
+        None, description="Center frame actually used after clamping"
+    )
+    context_frames: Optional[list[int]] = Field(
+        None, description="Frames provided to AI for analysis"
+    )
+    context_images: Optional[list[str]] = Field(
+        None, description="Base64 cropped context images sent to AI (debug mode only)"
+    )
+    error: Optional[str] = Field(None, description="Error message if any")
+    debug_info: Optional[dict] = Field(None, description="Debug information")
+    raw_request: Optional[dict] = Field(None, description="Raw API request")
+    raw_response: Optional[dict] = Field(None, description="Raw API response")
+    response_content: Optional[str] = Field(None, description="Extracted AI response content")
+
+
 @router.post("/suggest-attributes", response_model=AttributeSuggestionResponse)
 async def get_attribute_suggestions(
     request: AttributeSuggestionRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db)
 ) -> AttributeSuggestionResponse:
     """
@@ -141,14 +206,17 @@ async def get_attribute_suggestions(
         frames_path = str(settings.pvsg_mini_path)
 
         # Call AI service with debug mode
-        suggestions = await suggest_node_attributes(
-            video_id=request.video_id,
-            node=node,
-            frame_idx=request.frame_idx,
-            frames_path=frames_path,
-            provider=request.provider,
-            model=request.model,
-            debug_mode=request.debug
+        suggestions = await _await_with_disconnect_cancel(
+            http_request,
+            suggest_node_attributes(
+                video_id=request.video_id,
+                node=node,
+                frame_idx=request.frame_idx,
+                frames_path=frames_path,
+                provider=request.provider,
+                model=request.model,
+                debug_mode=request.debug,
+            ),
         )
 
         # Log the request for analytics
@@ -176,10 +244,91 @@ async def get_attribute_suggestions(
         # Re-raise HTTP exceptions
         raise
 
+    except asyncio.CancelledError:
+        logger.info(
+            "Node AI request cancelled: video=%s node=%s frame=%s",
+            request.video_id,
+            request.node_id,
+            request.frame_idx,
+        )
+        raise
+
     except Exception as e:
         # Handle unexpected errors
         logger.error(f"Unexpected error in get_attribute_suggestions: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error during AI analysis")
+
+
+@router.post("/suggest-edge", response_model=EdgeSuggestionResponse)
+async def get_edge_suggestions(
+    request: EdgeSuggestionRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> EdgeSuggestionResponse:
+    """Get AI suggestions for edge predicate/motion attributes."""
+    logger.info(
+        "AI edge suggestion request: video=%s edge=%s frame=%s provider=%s model=%s",
+        request.video_id,
+        request.edge_id,
+        request.frame_idx,
+        request.provider or settings.ai_default_provider,
+        request.model or "default",
+    )
+
+    # Verify video exists
+    result = await db.execute(select(Video).where(Video.video_id == request.video_id))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail=f"Video {request.video_id} not found")
+
+    if video.total_frames is not None and request.frame_idx >= video.total_frames:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Frame {request.frame_idx} is out of bounds. "
+                f"Video has {video.total_frames} frames (0-{video.total_frames - 1})"
+            ),
+        )
+
+    try:
+        loader = VSGLoader(video.vsg_path)
+        service = AnnotationService(db, loader, video_id=request.video_id)
+        effective_edges = await service.get_edges_with_revisions()
+        edge = next((e for e in effective_edges if e.edge_id == request.edge_id), None)
+        if edge is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Edge {request.edge_id} not found in video {request.video_id}",
+            )
+
+        suggestions = await _await_with_disconnect_cancel(
+            http_request,
+            suggest_edge_annotation(
+                video_id=request.video_id,
+                edge=edge.model_dump(),
+                frame_idx=request.frame_idx,
+                frames_path=video.frames_path,
+                nodes_by_id={k: v.model_dump() for k, v in loader.get_all_nodes().items()},
+                total_frames=video.total_frames or loader.total_frames,
+                provider=request.provider,
+                model=request.model,
+                debug_mode=request.debug,
+            ),
+        )
+        return EdgeSuggestionResponse(**suggestions)
+    except HTTPException:
+        raise
+    except asyncio.CancelledError:
+        logger.info(
+            "Edge AI request cancelled: video=%s edge=%s frame=%s",
+            request.video_id,
+            request.edge_id,
+            request.frame_idx,
+        )
+        raise
+    except Exception as e:
+        logger.error("Unexpected error in get_edge_suggestions: %s", str(e))
+        raise HTTPException(status_code=500, detail="Internal server error during edge AI analysis")
 
 
 @router.get("/health")

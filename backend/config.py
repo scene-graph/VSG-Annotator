@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     gemini_max_tokens: int = 2048
     gemini_temperature: float = 0.6
 
+    # AI HTTP client timeouts (seconds)
+    ai_http_connect_timeout_s: float = 5.0
+    ai_http_read_timeout_s: float = 25.0
+    ai_http_write_timeout_s: float = 25.0
+    ai_http_pool_timeout_s: float = 5.0
+
     class Config:
         env_file = str(_ENV_FILE)
         env_file_encoding = "utf-8"

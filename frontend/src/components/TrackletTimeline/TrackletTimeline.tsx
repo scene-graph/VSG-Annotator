@@ -22,7 +22,7 @@ const COLORS = {
 
 const LANE_HEIGHT = 20;
 const LANE_PADDING = 4;
-const MARGIN = { top: 30, right: 20, bottom: 20, left: 120 };
+const MARGIN = { top: 30, right: 20, bottom: 20, left: 132 };
 
 // Extract tracklet range from node's bboxes_by_frame
 function getTrackletRange(node: Node): { start: number; end: number } {
@@ -341,8 +341,10 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
       else if (isSource) labelColor = COLORS.source;
       else if (isTarget) labelColor = COLORS.target;
 
-      g.append('text')
-        .attr('x', MARGIN.left - 8)
+      const labelX = MARGIN.left - 8;
+      const labelY = y + LANE_HEIGHT / 2 + 4;
+      const labelText = g.append('text')
+        .attr('x', labelX)
         .attr('y', y + LANE_HEIGHT / 2 + 4)
         .attr('text-anchor', 'end')
         .attr('font-size', '11px')
@@ -366,6 +368,16 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
             }
           }
         });
+
+      if (isReviewed) {
+        const labelWidth = labelText.node()?.getComputedTextLength() ?? 0;
+        g.append('circle')
+          .attr('cx', labelX - labelWidth - 10)
+          .attr('cy', labelY - 4)
+          .attr('r', 4)
+          .attr('fill', '#22c55e')
+          .attr('pointer-events', 'none');
+      }
 
       // Draw each contiguous segment as a separate bar
       segments.forEach((segment) => {
@@ -423,17 +435,6 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
             .text(`${segment.start}-${segment.end}`);
         }
       });
-
-      if (isReviewed && segments.length > 0) {
-        const lastSegment = segments[segments.length - 1];
-        const endX = xScale(lastSegment.end);
-        g.append('circle')
-          .attr('cx', endX - 8)
-          .attr('cy', y + LANE_HEIGHT / 2)
-          .attr('r', 4)
-          .attr('fill', '#22c55e')
-          .attr('pointer-events', 'none');
-      }
 
       // Add badge indicator for edge creation mode
       if (isInCreationMode && (isSource || isTarget)) {

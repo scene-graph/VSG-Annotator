@@ -5,6 +5,8 @@ import { useModifyNode } from '../../hooks/useVideo';
 import { NodeEditor } from './NodeEditor';
 import clsx from 'clsx';
 
+const PERSON_CATEGORIES = new Set(['person', 'adult', 'child', 'baby']);
+
 interface NodeReviewProps {
   videoId: string;
 }
@@ -128,6 +130,7 @@ export function NodeReview({ videoId }: NodeReviewProps) {
   const range = getTrackletRange(selectedNode);
   const nodeTypeColor = selectedNode.is_static ? COLORS.static : COLORS.dynamic;
   const nodeTypeBgColor = selectedNode.is_static ? 'bg-gray-500' : 'bg-orange-500';
+  const isPerson = PERSON_CATEGORIES.has(selectedNode.category.toLowerCase());
   const selectedNodeAiStatus = aiSuggestionStatusByNode[selectedNode.node_id] ?? 'idle';
 
   // Handle clicking a related edge
@@ -267,11 +270,17 @@ export function NodeReview({ videoId }: NodeReviewProps) {
               </div>
             )}
 
-            {/* Physical Attributes */}
-            {selectedNode.attributes?.physical && (
-              <div className="bg-gray-700 rounded p-3">
-                <div className="text-gray-400 text-xs uppercase mb-2">Physical Attributes</div>
-                <div className="flex flex-wrap gap-2">
+        {/* Physical Attributes */}
+        {selectedNode.attributes?.physical && (
+          <div className="bg-gray-700 rounded p-3">
+            <div className="text-gray-400 text-xs uppercase mb-2">Physical Attributes</div>
+            <div className="flex flex-wrap gap-2">
+              {isPerson ? (
+                <span className="px-2 py-1 rounded bg-yellow-500/20 text-yellow-300 text-base">
+                  {selectedNode.attributes.physical.age || 'unknown'}
+                </span>
+              ) : (
+                <>
                   {selectedNode.attributes.physical.size && (
                     <span className="px-2 py-1 rounded bg-yellow-500/20 text-yellow-300 text-base">
                       {selectedNode.attributes.physical.size}
@@ -282,9 +291,11 @@ export function NodeReview({ videoId }: NodeReviewProps) {
                       {selectedNode.attributes.physical.shape}
                     </span>
                   )}
-                </div>
-              </div>
-            )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
           </>
         )}
 

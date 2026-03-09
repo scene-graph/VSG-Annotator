@@ -19,6 +19,17 @@ import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'reac
 import { aiApi } from './services/ai';
 import type { Node } from './types';
 
+function isBackendUnavailableError(error: unknown): boolean {
+  const msg = ((error as Error | undefined)?.message || '').toLowerCase();
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('load failed') ||
+    msg.includes('econnrefused') ||
+    msg.includes('fetch')
+  );
+}
+
 function VideoList() {
   const { data: videos, isLoading, error } = useVideos();
 
@@ -242,7 +253,13 @@ function VideoAnnotation() {
     };
   }, []);
 
-  const { data: video, isLoading: videoLoading, error: videoError } = useVideo(videoId);
+  const {
+    data: video,
+    isLoading: videoLoading,
+    isFetching: videoFetching,
+    error: videoError,
+    refetch: refetchVideo,
+  } = useVideo(videoId);
   const [videoStatus, setVideoStatus] = useState<string>('pending');
   const { data: nodesData } = useNodes(videoId);
   const { data: edgesData } = useEdges(videoId, filters);
@@ -396,10 +413,44 @@ function VideoAnnotation() {
     }
   }, [bulkAiProgress.running]);
 
+  const backendStarting = !!videoError && !video && isBackendUnavailableError(videoError);
+
+  useEffect(() => {
+    if (!backendStarting) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      refetchVideo();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [backendStarting, refetchVideo]);
+
   if (videoLoading) {
     return (
       <div className="flex items-center justify-center h-screen">
         <div className="text-gray-400">Loading video...</div>
+      </div>
+    );
+  }
+
+  if (backendStarting) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen gap-3">
+        <svg className="animate-spin h-8 w-8 text-blue-400" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        <div className="text-gray-200 font-medium">Backend is starting</div>
+        <div className="text-gray-400 text-sm">
+          Waiting for API connection and retrying automatically...
+        </div>
+        <button
+          onClick={() => refetchVideo()}
+          disabled={videoFetching}
+          className="mt-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white px-3 py-1.5 rounded text-sm"
+        >
+          {videoFetching ? 'Retrying...' : 'Retry now'}
+        </button>
       </div>
     );
   }

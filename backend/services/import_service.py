@@ -96,7 +96,14 @@ class ImportService:
         """
         # Get sample directory from existing vsg_path
         original_vsg_path = Path(video.vsg_path)
-        sample_dir = original_vsg_path.parent.parent  # Go up from outputs/
+        outputs_dir = None
+        for parent in original_vsg_path.parents:
+            if parent.name == "outputs":
+                outputs_dir = parent
+        if outputs_dir is not None:
+            sample_dir = outputs_dir.parent
+        else:
+            sample_dir = original_vsg_path.parent.parent  # Go up from outputs/
 
         # Create imports directory
         imports_dir = sample_dir / "outputs" / "imports"

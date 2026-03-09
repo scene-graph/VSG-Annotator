@@ -346,6 +346,8 @@ async def get_nodes(
                     node.attributes.visual = NodeVisualAttributes(**visual)
                 if physical:
                     node.attributes.physical = NodePhysicalAttributes(**physical)
+                if physical and physical.get("age") is not None:
+                    node.attributes.physical.age = physical.get("age")
             node.has_revision = True
             node.revision_action = latest_rev.action
         else:
@@ -400,6 +402,8 @@ async def get_node(
                 node.attributes.visual = NodeVisualAttributes(**visual)
             if physical:
                 node.attributes.physical = NodePhysicalAttributes(**physical)
+            if physical and physical.get("age") is not None:
+                node.attributes.physical.age = physical.get("age")
         node.has_revision = True
         node.revision_action = latest_rev.action
     else:

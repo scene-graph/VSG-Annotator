@@ -18,8 +18,9 @@ export interface AttributeSuggestionResponse {
     material: string;
   };
   physical: {
-    size: string;
-    shape: string;
+    size?: string;
+    shape?: string;
+    age?: string;
   };
   confidence: number;
   node_id: string;
@@ -33,6 +34,36 @@ export interface AttributeSuggestionResponse {
     error_details?: string;
   };
   cropped_image?: string;
+  raw_request?: any;
+  raw_response?: any;
+  response_content?: string;
+}
+
+export interface EdgeSuggestionRequest {
+  video_id: string;
+  edge_id: string;
+  frame_idx: number;
+  debug?: boolean;
+  provider?: 'kimi' | 'openai' | 'gemini';
+  model?: string;
+}
+
+export interface EdgeSuggestionResponse {
+  edge_id: string;
+  edge_type: 'static' | 'dynamic' | 'fg_bg';
+  predicate: string;
+  time_periods: Array<{ start_frame: number; end_frame: number }>;
+  attributes?: {
+    velocity: string;
+    direction: string;
+    trajectory: string;
+  };
+  confidence: number;
+  resolved_frame_idx?: number;
+  context_frames?: number[];
+  context_images?: string[];
+  error?: string;
+  debug_info?: Record<string, unknown>;
   raw_request?: any;
   raw_response?: any;
   response_content?: string;
@@ -66,6 +97,20 @@ export const aiApi = {
     signal?: AbortSignal
   ): Promise<AttributeSuggestionResponse> => {
     return fetchJson(`${API_BASE}/ai/suggest-attributes`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+      signal,
+    });
+  },
+
+  /**
+   * Get AI suggestions for an edge.
+   */
+  suggestEdge: (
+    request: EdgeSuggestionRequest,
+    signal?: AbortSignal
+  ): Promise<EdgeSuggestionResponse> => {
+    return fetchJson(`${API_BASE}/ai/suggest-edge`, {
       method: 'POST',
       body: JSON.stringify(request),
       signal,

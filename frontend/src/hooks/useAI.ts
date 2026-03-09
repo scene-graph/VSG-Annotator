@@ -1,8 +1,19 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { aiApi, type AttributeSuggestionRequest, type AttributeSuggestionResponse } from '../services/ai';
+import {
+  aiApi,
+  type AttributeSuggestionRequest,
+  type AttributeSuggestionResponse,
+  type EdgeSuggestionRequest,
+  type EdgeSuggestionResponse,
+} from '../services/ai';
 
 export interface AISuggestArgs {
   request: AttributeSuggestionRequest;
+  signal?: AbortSignal;
+}
+
+export interface EdgeAISuggestArgs {
+  request: EdgeSuggestionRequest;
   signal?: AbortSignal;
 }
 
@@ -17,6 +28,21 @@ export function useAISuggestions() {
     retry: 1,
     onError: (error) => {
       console.error('Failed to get AI suggestions:', error);
+    },
+  });
+}
+
+/**
+ * Hook for getting AI suggestions for an edge.
+ */
+export function useAIEdgeSuggestions() {
+  return useMutation<EdgeSuggestionResponse, Error, EdgeAISuggestArgs>({
+    mutationFn: async ({ request, signal }) => {
+      return await aiApi.suggestEdge(request, signal);
+    },
+    retry: 1,
+    onError: (error) => {
+      console.error('Failed to get AI edge suggestions:', error);
     },
   });
 }

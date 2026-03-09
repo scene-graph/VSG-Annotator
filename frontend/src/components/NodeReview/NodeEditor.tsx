@@ -43,6 +43,10 @@ const SHAPE_VALUES = [
   'irregular', 'elongated', 'round'
 ];
 
+const AGE_VALUES = ['unknown', 'child', 'youth', 'middle-age', 'old'];
+
+const PERSON_CATEGORIES = new Set(['person', 'adult', 'child', 'baby']);
+
 export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps) {
   // Visual attributes
   const [color, setColor] = useState(node.attributes?.visual?.color || 'unknown');
@@ -52,6 +56,7 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
   // Physical attributes
   const [size, setSize] = useState(node.attributes?.physical?.size || 'medium');
   const [shape, setShape] = useState(node.attributes?.physical?.shape || 'unknown');
+  const [age, setAge] = useState(node.attributes?.physical?.age || 'unknown');
   const [isStatic, setIsStatic] = useState(node.is_static);
 
   // AI suggestions
@@ -77,6 +82,7 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
   const storedSuggestionSource = aiSuggestionSourceByNode[node.node_id];
   const effectiveSuggestion = storedSuggestion ?? aiSuggestions;
   const showSuggestionPanel = (storedSuggestion && !storedSuggestion.error) || (showSuggestions && aiSuggestions && !aiSuggestions.error);
+  const isPerson = PERSON_CATEGORIES.has(node.category.toLowerCase());
 
   // Sync local state when node prop changes
   useEffect(() => {
@@ -85,9 +91,10 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
     setMaterial(node.attributes?.visual?.material || 'unknown');
     setSize(node.attributes?.physical?.size || 'medium');
     setShape(node.attributes?.physical?.shape || 'unknown');
+    setAge(node.attributes?.physical?.age || 'unknown');
     setIsStatic(node.is_static);
   }, [node.node_id, node.attributes?.visual?.color, node.attributes?.visual?.texture,
-      node.attributes?.visual?.material, node.attributes?.physical?.size, node.attributes?.physical?.shape, node.is_static]);
+      node.attributes?.visual?.material, node.attributes?.physical?.size, node.attributes?.physical?.shape, node.attributes?.physical?.age, node.is_static]);
 
   useEffect(() => {
     setAiSuggestions(null);
@@ -210,6 +217,9 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
       case 'shape':
         setShape(value);
         break;
+      case 'age':
+        setAge(value);
+        break;
     }
   };
 
@@ -219,8 +229,12 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
       setColor(effectiveSuggestion.visual.color);
       setTexture(effectiveSuggestion.visual.texture);
       setMaterial(effectiveSuggestion.visual.material);
-      setSize(effectiveSuggestion.physical.size);
-      setShape(effectiveSuggestion.physical.shape);
+      if (isPerson) {
+        setAge(effectiveSuggestion.physical.age || 'unknown');
+      } else {
+        setSize(effectiveSuggestion.physical.size || 'medium');
+        setShape(effectiveSuggestion.physical.shape || 'unknown');
+      }
       setShowSuggestions(false);
     }
   };
@@ -233,8 +247,12 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
     setColor(effectiveSuggestion.visual.color);
     setTexture(effectiveSuggestion.visual.texture);
     setMaterial(effectiveSuggestion.visual.material);
-    setSize(effectiveSuggestion.physical.size);
-    setShape(effectiveSuggestion.physical.shape);
+    if (isPerson) {
+      setAge(effectiveSuggestion.physical.age || 'unknown');
+    } else {
+      setSize(effectiveSuggestion.physical.size || 'medium');
+      setShape(effectiveSuggestion.physical.shape || 'unknown');
+    }
     setShowSuggestions(false);
 
     onSave({
@@ -244,8 +262,12 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
         material: effectiveSuggestion.visual.material,
       },
       physical: {
-        size: effectiveSuggestion.physical.size,
-        shape: effectiveSuggestion.physical.shape,
+        ...(isPerson
+          ? { age: effectiveSuggestion.physical.age || 'unknown' }
+          : {
+              size: effectiveSuggestion.physical.size || 'medium',
+              shape: effectiveSuggestion.physical.shape || 'unknown',
+            }),
       },
     });
   };
@@ -270,8 +292,12 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
     }
 
     // Check for physical attribute changes
-    const origPhysical = node.attributes?.physical || { size: 'medium', shape: 'unknown' };
-    if (size !== origPhysical.size || shape !== origPhysical.shape) {
+    const origPhysical = node.attributes?.physical || { size: 'medium', shape: 'unknown', age: 'unknown' };
+    if (isPerson) {
+      if (age !== (origPhysical.age || 'unknown')) {
+        changes.physical = { age };
+      }
+    } else if (size !== origPhysical.size || shape !== origPhysical.shape) {
       changes.physical = { size, shape };
     }
 
@@ -282,7 +308,7 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
     if (Object.keys(changes).length === 0) {
       onSave({
         visual: { color, texture, material },
-        physical: { size, shape },
+        physical: isPerson ? { age } : { size, shape },
         is_static: isStatic,
       });
       return;
@@ -410,22 +436,35 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
                 options: MATERIAL_VALUES,
                 ai: effectiveSuggestion?.visual.material,
               },
-              {
-                label: 'size',
-                orig: node.attributes?.physical?.size || 'medium',
-                value: size,
-                setValue: setSize,
-                options: SIZE_VALUES,
-                ai: effectiveSuggestion?.physical.size,
-              },
-              {
-                label: 'shape',
-                orig: node.attributes?.physical?.shape || 'unknown',
-                value: shape,
-                setValue: setShape,
-                options: SHAPE_VALUES,
-                ai: effectiveSuggestion?.physical.shape,
-              },
+              ...(isPerson
+                ? [
+                    {
+                      label: 'age',
+                      orig: node.attributes?.physical?.age || 'unknown',
+                      value: age,
+                      setValue: setAge,
+                      options: AGE_VALUES,
+                      ai: effectiveSuggestion?.physical.age,
+                    },
+                  ]
+                : [
+                    {
+                      label: 'size',
+                      orig: node.attributes?.physical?.size || 'medium',
+                      value: size,
+                      setValue: setSize,
+                      options: SIZE_VALUES,
+                      ai: effectiveSuggestion?.physical.size,
+                    },
+                    {
+                      label: 'shape',
+                      orig: node.attributes?.physical?.shape || 'unknown',
+                      value: shape,
+                      setValue: setShape,
+                      options: SHAPE_VALUES,
+                      ai: effectiveSuggestion?.physical.shape,
+                    },
+                  ]),
             ].map((row) => {
               const hasAi = showSuggestionPanel && effectiveSuggestion && !effectiveSuggestion.error && row.ai;
               const different = hasAi ? row.orig !== row.ai : false;

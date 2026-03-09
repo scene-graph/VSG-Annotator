@@ -135,7 +135,10 @@ python scripts/import_vsg.py     # Import video samples
 python scripts/seed_data.py      # Create test users (admin, annotator1, annotator2, reviewer)
 
 # 2. Start backend (Terminal 1)
-cd backend && uvicorn main:app --reload --port 8000
+cd backend && uvicorn main:app --reload --host 127.0.0.1 --port 8000
+
+# Optional sanity check (from project root)
+curl -sS http://127.0.0.1:8000/health
 
 # 3. Start frontend (Terminal 2)
 cd frontend
@@ -150,8 +153,8 @@ npm run dev
 | Service | URL |
 |---------|-----|
 | Frontend | http://localhost:5173 |
-| Backend API | http://localhost:8000 |
-| API Docs | http://localhost:8000/docs |
+| Backend API | http://127.0.0.1:8000 |
+| API Docs | http://127.0.0.1:8000/docs |
 
 ---
 
