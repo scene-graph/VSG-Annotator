@@ -28,6 +28,7 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
   const cancelEdgeCreation = useAppStore((state) => state.cancelEdgeCreation);
 
   const [showHistory, setShowHistory] = useState(false);
+  const [showConfidence, setShowConfidence] = useState(false);
   const [showReviewNotes, setShowReviewNotes] = useState(false);
   const [isSavingEdge, setIsSavingEdge] = useState(false);
   const [edgeSaveError, setEdgeSaveError] = useState<string | null>(null);
@@ -44,6 +45,7 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
   // Reset panel UI state whenever a new edge is selected.
   useEffect(() => {
     if (selectedEdge) {
+      setShowConfidence(false);
       setShowReviewNotes(false);
       setShowValidationReasoning(false);
       setEdgeSaveError(null);
@@ -281,36 +283,54 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
         </div>
 
         {/* Confidence & validation */}
-        <div className="bg-gray-700 rounded p-3">
-          <div className="text-gray-400 text-xs uppercase mb-2">Confidence</div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className={clsx(
-              'px-2 py-0.5 rounded text-xs',
-              selectedEdge.validated ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-            )}>
-              {selectedEdge.validated ? 'Validated' : 'Not Validated'}
-            </span>
-            <span className={clsx(
-              'px-2 py-0.5 rounded text-xs',
-              selectedEdge.extraction_round === 0 ? 'bg-blue-500/20 text-blue-400' : 'bg-yellow-500/20 text-yellow-400'
-            )}>
-              {selectedEdge.extraction_round === 0 ? 'PVSG GT' : 'GPT Extracted'}
-            </span>
-          </div>
-          <div className="flex gap-4">
-            <div>
-              <span className="text-gray-400 text-xs">Overall:</span>
-              <span className="text-white ml-1 font-mono">{selectedEdge.confidence.toFixed(2)}</span>
+        <div className="bg-gray-700 rounded overflow-hidden">
+          <button
+            onClick={() => setShowConfidence(!showConfidence)}
+            className="w-full flex items-center justify-between p-3 hover:bg-gray-600 transition-colors"
+          >
+            <span className="text-gray-400 text-xs uppercase">Confidence</span>
+            <svg
+              className={clsx('w-4 h-4 text-gray-400 transition-transform', showConfidence && 'rotate-180')}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          {showConfidence && (
+            <div className="px-3 pb-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className={clsx(
+                  'px-2 py-0.5 rounded text-xs',
+                  selectedEdge.validated ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                )}>
+                  {selectedEdge.validated ? 'Validated' : 'Not Validated'}
+                </span>
+                <span className={clsx(
+                  'px-2 py-0.5 rounded text-xs',
+                  selectedEdge.extraction_round === 0 ? 'bg-blue-500/20 text-blue-400' : 'bg-yellow-500/20 text-yellow-400'
+                )}>
+                  {selectedEdge.extraction_round === 0 ? 'PVSG GT' : 'GPT Extracted'}
+                </span>
+              </div>
+              <div className="flex gap-4">
+                <div>
+                  <span className="text-gray-400 text-xs">Overall:</span>
+                  <span className="text-white ml-1 font-mono">{selectedEdge.confidence.toFixed(2)}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 text-xs">Round 1:</span>
+                  <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round1.toFixed(2)}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 text-xs">Round 2:</span>
+                  <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round2.toFixed(2)}</span>
+                </div>
+              </div>
             </div>
-            <div>
-              <span className="text-gray-400 text-xs">Round 1:</span>
-              <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round1.toFixed(2)}</span>
-            </div>
-            <div>
-              <span className="text-gray-400 text-xs">Round 2:</span>
-              <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round2.toFixed(2)}</span>
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Validation Reasoning */}
