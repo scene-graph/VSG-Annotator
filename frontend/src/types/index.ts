@@ -261,6 +261,7 @@ export interface NodeModify {
   new_visual_attributes?: NodeVisualAttributes;
   new_physical_attributes?: NodePhysicalAttributes;
   new_is_static?: boolean;
+  new_category?: string;
   notes?: string;
 }
 

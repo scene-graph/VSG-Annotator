@@ -12,6 +12,7 @@ interface NodeEditorProps {
     visual?: NodeVisualAttributes;
     physical?: NodePhysicalAttributes;
     is_static?: boolean;
+    category?: string;
   }) => void;
   onCancel: () => void;
 }
@@ -47,7 +48,23 @@ const AGE_VALUES = ['unknown', 'child', 'youth', 'middle-age', 'old'];
 
 const PERSON_CATEGORIES = new Set(['person', 'adult', 'child', 'baby']);
 
+const CATEGORY_VALUES = [
+  'adult', 'bag', 'ball', 'basket', 'beverage', 'bike', 'board', 'book', 'bottle', 'bowl',
+  'box', 'bread', 'brush', 'bucket', 'cabinet', 'candle', 'car', 'carpet', 'ceiling',
+  'cellphone', 'chair', 'child', 'chopstick', 'cloth', 'condiment', 'cookie', 'countertop',
+  'cover', 'cup', 'curtain', 'door', 'drawer', 'dustbin', 'egg', 'faucet', 'fence', 'floor',
+  'flower', 'fork', 'fridge', 'fruit', 'glass', 'glove', 'grain', 'grass', 'ground', 'iron',
+  'knife', 'light', 'mat', 'meat', 'microwave', 'mop', 'others', 'oven', 'pan', 'paper',
+  'person', 'pillow', 'pizza', 'plant', 'plate', 'pot', 'rack', 'rag', 'rock', 'scissor',
+  'shelf', 'shoe', 'simmering', 'sink', 'sky', 'sofa', 'spatula', 'sponge', 'spoon', 'spray',
+  'stairs', 'stove', 'switch', 'table', 'teapot', 'towel', 'tray', 'tree', 'vaccum',
+  'vegetable', 'wall', 'washer', 'water', 'window',
+];
+
 export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps) {
+  // Category
+  const [category, setCategory] = useState(node.category || 'others');
+
   // Visual attributes
   const [color, setColor] = useState(node.attributes?.visual?.color || 'unknown');
   const [texture, setTexture] = useState(node.attributes?.visual?.texture || 'unknown');
@@ -283,7 +300,13 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
       visual?: NodeVisualAttributes;
       physical?: NodePhysicalAttributes;
       is_static?: boolean;
+      category?: string;
     } = {};
+
+    // Check for category change
+    if (category !== node.category) {
+      changes.category = category;
+    }
 
     // Check for visual attribute changes
     const origVisual = node.attributes?.visual || { color: 'unknown', texture: 'unknown', material: 'unknown' };
@@ -293,7 +316,8 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
 
     // Check for physical attribute changes
     const origPhysical = node.attributes?.physical || { size: 'medium', shape: 'unknown', age: 'unknown' };
-    if (isPerson) {
+    const currentIsPerson = PERSON_CATEGORIES.has(category.toLowerCase());
+    if (currentIsPerson) {
       if (age !== (origPhysical.age || 'unknown')) {
         changes.physical = { age };
       }
@@ -308,8 +332,9 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
     if (Object.keys(changes).length === 0) {
       onSave({
         visual: { color, texture, material },
-        physical: isPerson ? { age } : { size, shape },
+        physical: currentIsPerson ? { age } : { size, shape },
         is_static: isStatic,
+        category,
       });
       return;
     }
@@ -327,6 +352,29 @@ export function NodeEditor({ node, videoId, onSave, onCancel }: NodeEditorProps)
       />
 
       <div className="space-y-4">
+        {/* Category */}
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Category</label>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className="w-full bg-gray-700 text-white rounded px-2 py-1.5 text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+          >
+            {/* Show current value first if not in list */}
+            {!CATEGORY_VALUES.includes(node.category) && (
+              <option value={node.category}>{node.category} (original)</option>
+            )}
+            {CATEGORY_VALUES.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+          {category !== node.category && (
+            <p className="text-xs text-yellow-400 mt-1">
+              Changed from <span className="font-mono">{node.category}</span>
+            </p>
+          )}
+        </div>
+
         {/* AI Suggestions Section */}
         <div>
           {/* Debug Mode Toggle */}

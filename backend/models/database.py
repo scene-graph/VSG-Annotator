@@ -183,6 +183,8 @@ class NodeRevision(Base):
     new_attributes: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     original_is_static: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     new_is_static: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    original_category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    new_category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
@@ -212,6 +214,10 @@ async def init_db() -> None:
             await conn.execute(text("ALTER TABLE node_revisions ADD COLUMN original_is_static BOOLEAN"))
         if "new_is_static" not in existing_cols:
             await conn.execute(text("ALTER TABLE node_revisions ADD COLUMN new_is_static BOOLEAN"))
+        if "original_category" not in existing_cols:
+            await conn.execute(text("ALTER TABLE node_revisions ADD COLUMN original_category VARCHAR(100)"))
+        if "new_category" not in existing_cols:
+            await conn.execute(text("ALTER TABLE node_revisions ADD COLUMN new_category VARCHAR(100)"))
         # Lightweight migration: add edge_revisions time_periods columns if missing (SQLite)
         result = await conn.execute(text("PRAGMA table_info(edge_revisions)"))
         existing_cols = {row[1] for row in result.fetchall()}

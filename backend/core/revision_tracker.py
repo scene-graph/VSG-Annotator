@@ -394,7 +394,11 @@ class RevisionTracker:
     # =========================================================================
 
     async def record_node_modify(
-        self, modification: NodeModify, original_attributes: dict, original_is_static: Optional[bool]
+        self,
+        modification: NodeModify,
+        original_attributes: dict,
+        original_is_static: Optional[bool],
+        original_category: Optional[str] = None,
     ) -> NodeRevision:
         """Record a node attribute modification."""
         video = await self.get_video_by_video_id(modification.video_id)
@@ -417,6 +421,8 @@ class RevisionTracker:
             new_attributes=new_attributes,
             original_is_static=original_is_static,
             new_is_static=modification.new_is_static,
+            original_category=original_category,
+            new_category=modification.new_category,
             review_notes=modification.notes,
         )
 
@@ -455,6 +461,8 @@ class RevisionTracker:
                     new_attributes=revision.new_attributes,
                     original_is_static=revision.original_is_static,
                     new_is_static=revision.new_is_static,
+                    original_category=revision.original_category,
+                    new_category=revision.new_category,
                     review_notes=revision.review_notes,
                     created_at=revision.created_at,
                 )

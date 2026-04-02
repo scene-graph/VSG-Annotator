@@ -79,6 +79,7 @@ export function NodeReview({ videoId }: NodeReviewProps) {
     visual?: NodeVisualAttributes;
     physical?: NodePhysicalAttributes;
     is_static?: boolean;
+    category?: string;
   }) => {
     if (!currentUser || !selectedNode) return;
 
@@ -90,11 +91,13 @@ export function NodeReview({ videoId }: NodeReviewProps) {
         new_visual_attributes: changes.visual,
         new_physical_attributes: changes.physical,
         new_is_static: changes.is_static,
+        new_category: changes.category,
       });
 
       // Optimistic update: update the node in the store
       const updatedNode: Node = {
         ...selectedNode,
+        category: changes.category ?? selectedNode.category,
         is_static: changes.is_static ?? selectedNode.is_static,
         attributes: {
           visual: changes.visual || selectedNode.attributes.visual,
@@ -238,6 +241,7 @@ export function NodeReview({ videoId }: NodeReviewProps) {
           <div className="bg-gray-700 rounded p-3">
             <div className="text-gray-400 text-xs uppercase mb-2">Edit Attributes</div>
             <NodeEditor
+              key={selectedNode.node_id}
               node={selectedNode}
               videoId={videoId}
               onSave={handleSaveChanges}

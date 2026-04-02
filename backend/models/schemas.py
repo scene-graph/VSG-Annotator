@@ -460,6 +460,7 @@ class NodeModify(BaseModel):
     new_visual_attributes: Optional[NodeVisualAttributes] = None
     new_physical_attributes: Optional[NodePhysicalAttributes] = None
     new_is_static: Optional[bool] = None
+    new_category: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -475,5 +476,7 @@ class NodeRevisionResponse(BaseModel):
     new_attributes: Optional[dict[str, Any]]
     original_is_static: Optional[bool] = None
     new_is_static: Optional[bool] = None
+    original_category: Optional[str] = None
+    new_category: Optional[str] = None
     review_notes: Optional[str]
     created_at: datetime

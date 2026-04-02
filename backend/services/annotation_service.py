@@ -269,17 +269,21 @@ class AnnotationService:
             "physical": node.attributes.physical.model_dump(),
         }
         original_is_static = node.is_static
+        original_category = node.category
 
-        # Prefer latest revision is_static if exists
+        # Prefer latest revision values if exists
         latest_rev = await self.tracker.get_latest_node_revision(
             modification.video_id, modification.node_id
         )
-        if latest_rev and latest_rev.new_is_static is not None:
-            original_is_static = latest_rev.new_is_static
+        if latest_rev:
+            if latest_rev.new_is_static is not None:
+                original_is_static = latest_rev.new_is_static
+            if latest_rev.new_category is not None:
+                original_category = latest_rev.new_category
 
         # Record the modification
         revision = await self.tracker.record_node_modify(
-            modification, original_attributes, original_is_static
+            modification, original_attributes, original_is_static, original_category
         )
 
         return {
@@ -299,6 +303,7 @@ class AnnotationService:
                     else None
                 ),
                 "is_static": modification.new_is_static,
+                "category": modification.new_category,
             },
         }
 

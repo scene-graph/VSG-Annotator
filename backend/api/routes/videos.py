@@ -339,6 +339,8 @@ async def get_nodes(
         if latest_rev:
             if latest_rev.new_is_static is not None:
                 node.is_static = latest_rev.new_is_static
+            if latest_rev.new_category is not None:
+                node.category = latest_rev.new_category
             if latest_rev.new_attributes:
                 visual = latest_rev.new_attributes.get("visual")
                 physical = latest_rev.new_attributes.get("physical")
@@ -395,6 +397,8 @@ async def get_node(
     if latest_rev:
         if latest_rev.new_is_static is not None:
             node.is_static = latest_rev.new_is_static
+        if latest_rev.new_category is not None:
+            node.category = latest_rev.new_category
         if latest_rev.new_attributes:
             visual = latest_rev.new_attributes.get("visual")
             physical = latest_rev.new_attributes.get("physical")
