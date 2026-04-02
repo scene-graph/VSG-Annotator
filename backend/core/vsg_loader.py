@@ -1,8 +1,11 @@
 """VSG Loader for Jan20 schema video scene graph files."""
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from backend.models.schemas import (
     BBox,
@@ -205,6 +208,20 @@ class VSGLoader:
         for edge_data in self.get_fg_bg_edges():
             edge = self._parse_fg_bg_edge(edge_data)
             edges.append(edge)
+
+        # Deduplicate edge IDs: rename later occurrences to <id>_dup1, _dup2, ...
+        seen: dict[str, int] = {}
+        for edge in edges:
+            original_id = edge.edge_id
+            if original_id in seen:
+                seen[original_id] += 1
+                edge.edge_id = f"{original_id}_dup{seen[original_id]}"
+                logger.warning(
+                    "Duplicate edge_id '%s' in VSG — renamed to '%s'",
+                    original_id, edge.edge_id,
+                )
+            else:
+                seen[original_id] = 0
 
         self._edges_cache = edges
         return edges
