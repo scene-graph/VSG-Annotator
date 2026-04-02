@@ -7,7 +7,7 @@ export interface AttributeSuggestionRequest {
   node_id: string;
   frame_idx: number;
   debug?: boolean;
-  provider?: 'kimi' | 'openai' | 'gemini';
+  provider?: 'openai' | 'gemini';
   model?: string;
 }
 
@@ -44,7 +44,7 @@ export interface EdgeSuggestionRequest {
   edge_id: string;
   frame_idx: number;
   debug?: boolean;
-  provider?: 'kimi' | 'openai' | 'gemini';
+  provider?: 'openai' | 'gemini';
   model?: string;
 }
 

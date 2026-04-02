@@ -339,26 +339,21 @@ async def check_ai_health() -> dict:
     Returns:
         Dict with health status
     """
+    api_ok = bool(settings.api_key)
     return {
-        "status": "healthy" if settings.nvidia_api_key else "unconfigured",
-        "api_configured": bool(settings.nvidia_api_key),
-        "model": settings.kimi_model,
-        "temperature": settings.kimi_temperature,
-        "thinking_enabled": settings.kimi_enable_thinking,
+        "status": "healthy" if api_ok else "unconfigured",
+        "api_configured": api_ok,
+        "model": settings.gemini_model,
+        "temperature": settings.gemini_temperature,
         "default_provider": settings.ai_default_provider,
         "providers": {
-            "kimi": {
-                "enabled": bool(settings.nvidia_api_key or settings.kimi_api_key),
-                "model": settings.kimi_model,
-                "key_source": "nvidia" if settings.nvidia_api_key else "kimi" if settings.kimi_api_key else "none",
-            },
             "openai": {
-                "enabled": bool(settings.openai_api_key),
-                "model": settings.openai_model
+                "enabled": api_ok,
+                "model": settings.openai_model,
             },
             "gemini": {
-                "enabled": bool(settings.gemini_api_key),
-                "model": settings.gemini_model
-            }
+                "enabled": api_ok,
+                "model": settings.gemini_model,
+            },
         }
     }

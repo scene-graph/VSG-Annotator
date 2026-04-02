@@ -96,8 +96,8 @@ interface AppState {
   setEdgeCreationType: (edgeType: EdgeType | null) => void;
 
   // AI suggestions (node attributes)
-  aiProvider: 'kimi' | 'openai' | 'gemini';
-  setAiProvider: (provider: 'kimi' | 'openai' | 'gemini') => void;
+  aiProvider: 'openai' | 'gemini';
+  setAiProvider: (provider: 'openai' | 'gemini') => void;
   aiSuggestionsByNode: Record<string, AttributeSuggestionResponse>;
   aiSuggestionStatusByNode: Record<string, 'idle' | 'pending' | 'done' | 'error'>;
   aiSuggestionFrameByNode: Record<string, number>;
@@ -321,7 +321,7 @@ export const useAppStore = create<AppState>((set) => ({
     })),
 
   // AI suggestions
-  aiProvider: 'kimi',
+  aiProvider: 'gemini',
   setAiProvider: (provider) => set({ aiProvider: provider }),
   aiSuggestionsByNode: {},
   aiSuggestionStatusByNode: {},

@@ -487,12 +487,11 @@ function VideoAnnotation() {
         <div className="flex items-center gap-4">
           <select
             value={aiProvider}
-            onChange={(e) => setAiProvider(e.target.value as 'kimi' | 'openai' | 'gemini')}
+            onChange={(e) => setAiProvider(e.target.value as 'openai' | 'gemini')}
             className="bg-gray-700 text-white rounded px-2 py-1 text-sm border border-gray-600"
           >
-            <option value="kimi">Kimi</option>
-            <option value="openai">OpenAI</option>
             <option value="gemini">Gemini</option>
+            <option value="openai">OpenAI</option>
           </select>
           <button
             onClick={bulkAiProgress.running ? handleCancelBulk : handleBulkAISuggestions}

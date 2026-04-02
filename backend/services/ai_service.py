@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Optional, Any, Tuple
 
 import requests
+from openai import AsyncOpenAI
 from PIL import Image
 
 from backend.config import settings
@@ -379,19 +380,11 @@ async def suggest_node_attributes(
 
     try:
         # Check if API key is configured
-        if provider_name == "kimi":
-            api_key = settings.nvidia_api_key or settings.kimi_api_key
-            if not api_key:
-                raise ValueError("NVIDIA_API_KEY or KIMI_API_KEY not configured in environment")
-            key_source = "nvidia" if settings.nvidia_api_key else "kimi"
-            model_name = model_name or settings.kimi_model
-        elif provider_name == "openai":
-            if not settings.openai_api_key:
-                raise ValueError("OPENAI_API_KEY not configured in environment")
+        if not settings.api_key:
+            raise ValueError("API_KEY not configured in environment")
+        if provider_name == "openai":
             model_name = model_name or settings.openai_model
         elif provider_name == "gemini":
-            if not settings.gemini_api_key:
-                raise ValueError("GEMINI_API_KEY not configured in environment")
             model_name = model_name or settings.gemini_model
         else:
             raise ValueError(f"Unsupported AI provider: {provider_name}")
@@ -460,44 +453,18 @@ async def suggest_node_attributes(
         prompt = build_attribute_prompt(category, frame_idx)
         debug_info['provider'] = provider_name
         debug_info['model'] = model_name
-        if provider_name == "kimi":
-            debug_info['key_source'] = key_source
 
-        # Prepare request based on provider
-        if provider_name == "kimi":
+        # Log image size and request details
+        logger.info(f"Calling {provider_name} API for node {node.get('node_id')} at frame {frame_idx}")
+        logger.info(f"Image size: {cropped_image.size}, Base64 length: {len(image_b64)}")
+        logger.info(f"Model: {model_name}")
+
+        client = AsyncOpenAI(api_key=settings.api_key, base_url=settings.gemini_api_url)
+        response_meta: Dict[str, Any] = {}
+
+        if provider_name == "openai":
             headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            }
-            payload = {
-                "model": model_name,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_b64}"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                "max_tokens": settings.kimi_max_tokens,
-                "temperature": settings.kimi_temperature,
-                "stream": False
-            }
-
-            if settings.kimi_enable_thinking:
-                payload["extra_body"] = {"thinking": True}
-
-            api_url = settings.kimi_api_url
-        elif provider_name == "openai":
-            headers = {
-                "Authorization": f"Bearer {settings.openai_api_key}",
+                "Authorization": f"Bearer {settings.api_key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json"
             }
@@ -520,63 +487,32 @@ async def suggest_node_attributes(
                 "max_tokens": settings.openai_max_tokens,
                 "temperature": settings.openai_temperature
             }
-            api_url = settings.openai_api_url
-        else:
-            headers = {
-                "Content-Type": "application/json",
-                "x-goog-api-key": settings.gemini_api_key
-            }
-            payload = {
-                "contents": [
-                    {
-                        "parts": [
-                            {"text": prompt},
-                            {
-                                "inline_data": {
-                                    "mime_type": "image/jpeg",
-                                    "data": image_b64
-                                }
-                            }
-                        ]
-                    }
-                ],
-                "generationConfig": {
-                    "maxOutputTokens": settings.gemini_max_tokens,
-                    "temperature": settings.gemini_temperature
-                }
-            }
-            base_url = settings.gemini_api_url.rstrip("/")
-            if ":generateContent" in base_url:
-                api_url = base_url
-            else:
-                api_url = f"{base_url}/{model_name}:generateContent"
-
-        # Log image size and request details
-        logger.info(f"Calling {provider_name} API for node {node.get('node_id')} at frame {frame_idx}")
-        logger.info(f"Image size: {cropped_image.size}, Base64 length: {len(image_b64)}")
-        logger.info(f"API URL: {api_url}")
-        logger.info(f"Model: {model_name}")
-
-        response = await post_with_timeout(api_url, headers, payload)
-
-        # Check response
-        if response.status_code != 200:
-            logger.error(f"Kimi API error: {response.status_code} - {response.text}")
-            raise ValueError(f"API request failed with status {response.status_code}")
-
-        # Parse response
-        result = response.json()
-        response_meta: Dict[str, Any] = {}
-
-        # Extract content from response
-        if provider_name in ("kimi", "openai"):
+            raw_response = await post_with_timeout(settings.openai_api_url, headers, payload)
+            if raw_response.status_code != 200:
+                raise ValueError(f"API request failed with status {raw_response.status_code}")
+            result = raw_response.json()
             if 'choices' not in result or len(result['choices']) == 0:
                 raise ValueError("No response from AI API")
             response_content, response_meta = extract_message_content(result)
             finish_reason = result.get("choices", [{}])[0].get("finish_reason")
             response_meta["finish_reason"] = finish_reason
         else:
-            response_content, response_meta = extract_gemini_content(result)
+            # Gemini via Responses API
+            gemini_resp = await client.responses.create(
+                model=model_name,
+                input=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{image_b64}"},
+                    ]
+                }],
+                max_output_tokens=settings.gemini_max_tokens,
+                temperature=settings.gemini_temperature,
+            )
+            response_content = gemini_resp.output_text
+            result = gemini_resp.model_dump()
+            response_meta["content_length"] = len(response_content or "")
         debug_info['response_meta'] = response_meta
         debug_info['response_content_present'] = bool(response_content)
         debug_info['content_source'] = response_meta.get("content_source")
@@ -656,12 +592,8 @@ async def suggest_node_attributes(
             suggestions['raw_request'] = {
                 "provider": provider_name,
                 "model": model_name,
-                "temperature": settings.kimi_temperature if provider_name == "kimi"
-                else settings.openai_temperature if provider_name == "openai"
-                else settings.gemini_temperature,
-                "max_tokens": settings.kimi_max_tokens if provider_name == "kimi"
-                else settings.openai_max_tokens if provider_name == "openai"
-                else settings.gemini_max_tokens,
+                "temperature": settings.openai_temperature if provider_name == "openai" else settings.gemini_temperature,
+                "max_tokens": settings.openai_max_tokens if provider_name == "openai" else settings.gemini_max_tokens,
                 "prompt": prompt[:500] + "..." if len(prompt) > 500 else prompt,
                 "image_size": cropped_image.size
             }
@@ -972,37 +904,12 @@ async def suggest_edge_annotation(
     fallback_attrs = edge.get("attributes") or DEFAULT_DYNAMIC_MOTION.copy()
 
     try:
-        if provider_name == "kimi":
-            api_key = settings.nvidia_api_key or settings.kimi_api_key
-            if not api_key:
-                raise ValueError("NVIDIA_API_KEY or KIMI_API_KEY not configured in environment")
-            model_name = model_name or settings.kimi_model
-            api_url = settings.kimi_api_url
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
-        elif provider_name == "openai":
-            if not settings.openai_api_key:
-                raise ValueError("OPENAI_API_KEY not configured in environment")
+        if not settings.api_key:
+            raise ValueError("API_KEY not configured in environment")
+        if provider_name == "openai":
             model_name = model_name or settings.openai_model
-            api_url = settings.openai_api_url
-            headers = {
-                "Authorization": f"Bearer {settings.openai_api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
         elif provider_name == "gemini":
-            if not settings.gemini_api_key:
-                raise ValueError("GEMINI_API_KEY not configured in environment")
             model_name = model_name or settings.gemini_model
-            base_url = settings.gemini_api_url.rstrip("/")
-            api_url = base_url if ":generateContent" in base_url else f"{base_url}/{model_name}:generateContent"
-            headers = {
-                "Content-Type": "application/json",
-                "x-goog-api-key": settings.gemini_api_key,
-            }
         else:
             raise ValueError(f"Unsupported AI provider: {provider_name}")
 
@@ -1068,51 +975,47 @@ async def suggest_edge_annotation(
             time_period=time_periods[0],
         )
 
-        if provider_name in ("kimi", "openai"):
-            content = [{"type": "text", "text": prompt}]
-            content.extend([
+        client = AsyncOpenAI(api_key=settings.api_key, base_url=settings.gemini_api_url)
+        response_meta: Dict[str, Any] = {}
+
+        if provider_name == "openai":
+            oa_content: list[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+            oa_content.extend([
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
                 for img_b64 in image_b64_list
             ])
             payload = {
                 "model": model_name,
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": (
-                    settings.kimi_max_tokens if provider_name == "kimi"
-                    else settings.openai_max_tokens
-                ),
-                "temperature": (
-                    settings.kimi_temperature if provider_name == "kimi"
-                    else settings.openai_temperature
-                ),
+                "messages": [{"role": "user", "content": oa_content}],
+                "max_tokens": settings.openai_max_tokens,
+                "temperature": settings.openai_temperature,
             }
-            if provider_name == "kimi":
-                payload["stream"] = False
-                if settings.kimi_enable_thinking:
-                    payload["extra_body"] = {"thinking": True}
-        else:
-            parts: list[Dict[str, Any]] = [{"text": prompt}]
-            parts.extend([
-                {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
-                for img_b64 in image_b64_list
-            ])
-            payload = {
-                "contents": [{"parts": parts}],
-                "generationConfig": {
-                    "maxOutputTokens": settings.gemini_max_tokens,
-                    "temperature": settings.gemini_temperature,
-                },
+            headers = {
+                "Authorization": f"Bearer {settings.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
             }
-
-        response = await post_with_timeout(api_url, headers, payload)
-        if response.status_code != 200:
-            raise ValueError(f"API request failed with status {response.status_code}")
-
-        result = response.json()
-        if provider_name in ("kimi", "openai"):
+            raw_response = await post_with_timeout(settings.openai_api_url, headers, payload)
+            if raw_response.status_code != 200:
+                raise ValueError(f"API request failed with status {raw_response.status_code}")
+            result = raw_response.json()
             response_content, response_meta = extract_message_content(result)
         else:
-            response_content, response_meta = extract_gemini_content(result)
+            # Gemini via Responses API
+            g_content: list[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+            g_content.extend([
+                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{img_b64}"}
+                for img_b64 in image_b64_list
+            ])
+            gemini_resp = await client.responses.create(
+                model=model_name,
+                input=[{"role": "user", "content": g_content}],
+                max_output_tokens=settings.gemini_max_tokens,
+                temperature=settings.gemini_temperature,
+            )
+            response_content = gemini_resp.output_text
+            result = gemini_resp.model_dump()
+            response_meta["content_length"] = len(response_content or "")
         debug_info["response_meta"] = response_meta
 
         if not response_content or not response_content.strip():

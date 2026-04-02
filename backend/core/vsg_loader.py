@@ -352,6 +352,10 @@ def find_latest_vsg(sample_dir: Path) -> Optional[Path]:
         return None
 
     vsg_files = list(outputs_dir.glob("video_scene_graph_*.json"))
+    # Also match the exact name "video_scene_graph.json" (no timestamp suffix)
+    exact = outputs_dir / "video_scene_graph.json"
+    if exact.exists() and exact not in vsg_files:
+        vsg_files.append(exact)
     if not vsg_files:
         return None
 
