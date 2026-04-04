@@ -40,10 +40,10 @@ class Settings(BaseSettings):
     api_key: str = Field("", alias="API_KEY")
 
     # Multi-provider AI Configuration
-    ai_default_provider: str = "gemini"
+    ai_default_provider: str = "openai"
 
     openai_api_url: str = "https://bd.ctis.site/v1/chat/completions"
-    openai_model: str = "gpt-5.2"
+    openai_model: str = "gpt-5.4-mini"
     openai_max_tokens: int = 1024
     openai_temperature: float = 0.6
 

@@ -41,6 +41,10 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 // Videos API
 export const videosApi = {
+  reload: (): Promise<{ imported: string[]; skipped: string[]; imported_count: number; skipped_count: number; total_on_disk: number }> => {
+    return fetchJson(`${API_BASE}/videos/reload`, { method: 'POST' });
+  },
+
   list: (status?: string, dataset?: string): Promise<VideoSummary[]> => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);

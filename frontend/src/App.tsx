@@ -31,7 +31,23 @@ function isBackendUnavailableError(error: unknown): boolean {
 }
 
 function VideoList() {
-  const { data: videos, isLoading, error } = useVideos();
+  const { data: videos, isLoading, error, refetch } = useVideos();
+  const [reloading, setReloading] = useState(false);
+  const [reloadResult, setReloadResult] = useState<{ imported: string[]; total_on_disk: number } | null>(null);
+
+  const handleReload = async () => {
+    setReloading(true);
+    setReloadResult(null);
+    try {
+      const result = await videosApi.reload();
+      setReloadResult({ imported: result.imported, total_on_disk: result.total_on_disk });
+      await refetch();
+    } catch (err) {
+      console.error('Reload failed:', err);
+    } finally {
+      setReloading(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -53,16 +69,42 @@ function VideoList() {
     return (
       <div className="flex flex-col items-center justify-center h-64">
         <div className="text-gray-400 mb-4">No videos imported yet.</div>
-        <div className="text-gray-500 text-sm">
-          Run <code className="bg-gray-800 px-2 py-1 rounded">python scripts/import_vsg.py</code> to import videos.
-        </div>
+        <button
+          onClick={handleReload}
+          disabled={reloading}
+          className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white px-4 py-2 rounded text-sm font-medium"
+        >
+          {reloading ? 'Scanning...' : 'Scan Data Source'}
+        </button>
       </div>
     );
   }
 
   return (
     <div className="p-6">
-      <h1 className="text-2xl font-bold text-white mb-6">Video Scene Graph Annotation</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-white">Video Scene Graph Annotation</h1>
+        <div className="flex items-center gap-3">
+          {reloadResult && reloadResult.imported.length > 0 && (
+            <span className="text-green-400 text-sm">
+              +{reloadResult.imported.length} new video{reloadResult.imported.length !== 1 ? 's' : ''} imported
+            </span>
+          )}
+          {reloadResult && reloadResult.imported.length === 0 && (
+            <span className="text-gray-400 text-sm">No new videos found</span>
+          )}
+          <button
+            onClick={handleReload}
+            disabled={reloading}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white px-3 py-1.5 rounded text-sm font-medium transition-colors"
+          >
+            <svg className={`w-4 h-4 ${reloading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            {reloading ? 'Scanning...' : 'Reload Data Source'}
+          </button>
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {videos.map((video) => (
@@ -490,8 +532,8 @@ function VideoAnnotation() {
             onChange={(e) => setAiProvider(e.target.value as 'openai' | 'gemini')}
             className="bg-gray-700 text-white rounded px-2 py-1 text-sm border border-gray-600"
           >
-            <option value="gemini">Gemini</option>
-            <option value="openai">OpenAI</option>
+            <option value="openai">GPT 5.4 Mini</option>
+            <option value="gemini">Gemini 3 Flash</option>
           </select>
           <button
             onClick={bulkAiProgress.running ? handleCancelBulk : handleBulkAISuggestions}
