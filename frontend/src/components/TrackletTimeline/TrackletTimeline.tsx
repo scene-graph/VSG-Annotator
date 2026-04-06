@@ -361,9 +361,21 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
               toggleTargetNode(node.node_id);
             }
           } else {
-            // Normal mode: select this node and seek to first frame
+            // Normal mode: select this node and seek to best frame (largest bbox)
             setSelectedNode(node);
-            if (segments.length > 0) {
+            const bboxEntries = Object.entries(node.bboxes_by_frame);
+            if (bboxEntries.length > 0) {
+              let bestFrame = Number(bboxEntries[0][0]);
+              let bestArea = 0;
+              for (const [frameStr, bbox] of bboxEntries) {
+                const area = (bbox.width ?? 0) * (bbox.height ?? 0);
+                if (area > bestArea) {
+                  bestArea = area;
+                  bestFrame = Number(frameStr);
+                }
+              }
+              setCurrentFrame(bestFrame);
+            } else if (segments.length > 0) {
               setCurrentFrame(segments[0].start);
             }
           }

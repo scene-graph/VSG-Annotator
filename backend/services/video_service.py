@@ -25,14 +25,21 @@ class VideoService:
 
     def get_frame_path(self, frame_idx: int) -> Optional[Path]:
         """Get the path to a specific frame image."""
-        # Try common naming patterns
+        # Try common naming patterns (0-indexed, then 1-indexed)
         patterns = [
             f"{frame_idx:04d}.png",
             f"{frame_idx:04d}.jpg",
+            f"{frame_idx:06d}.png",
+            f"{frame_idx:06d}.jpg",
             f"frame_{frame_idx:04d}.png",
             f"frame_{frame_idx:04d}.jpg",
             f"{frame_idx}.png",
             f"{frame_idx}.jpg",
+            # 1-indexed variants (frame_idx 0 -> file 000001)
+            f"{frame_idx + 1:06d}.png",
+            f"{frame_idx + 1:06d}.jpg",
+            f"{frame_idx + 1:04d}.png",
+            f"{frame_idx + 1:04d}.jpg",
         ]
 
         for pattern in patterns:

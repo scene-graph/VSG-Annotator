@@ -99,12 +99,19 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
     const frameBboxes = bboxesByFrame.get(currentFrame);
     if (!frameBboxes) return [];
 
+    // When a node is selected, only show that node's bbox
+    if (selectedNode) {
+      const match = frameBboxes.find(({ nodeId }) => nodeId === selectedNode.node_id);
+      if (match) {
+        return [{ nodeId: match.nodeId, category: match.category, bbox: match.bbox, role: 'selected' }];
+      }
+      return [];
+    }
+
     return frameBboxes.map(({ nodeId, category, bbox }) => {
       // Determine role based on selection state
       let role: 'source' | 'target' | 'selected' | null = null;
-      if (selectedNode?.node_id === nodeId) {
-        role = 'selected';
-      } else if (sourceNodes.includes(nodeId)) {
+      if (sourceNodes.includes(nodeId)) {
         role = 'source';
       } else if (targetNodes.includes(nodeId)) {
         role = 'target';
