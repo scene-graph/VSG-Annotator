@@ -532,8 +532,8 @@ function VideoAnnotation() {
             onChange={(e) => setAiProvider(e.target.value as 'openai' | 'gemini')}
             className="bg-gray-700 text-white rounded px-2 py-1 text-sm border border-gray-600"
           >
-            <option value="openai">GPT 5.4 Mini</option>
             <option value="gemini">Gemini 3 Flash</option>
+            <option value="openai">GPT 5.4 Mini</option>
           </select>
           <button
             onClick={bulkAiProgress.running ? handleCancelBulk : handleBulkAISuggestions}

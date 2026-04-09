@@ -321,7 +321,7 @@ export const useAppStore = create<AppState>((set) => ({
     })),
 
   // AI suggestions
-  aiProvider: 'openai',
+  aiProvider: 'gemini',
   setAiProvider: (provider) => set({ aiProvider: provider }),
   aiSuggestionsByNode: {},
   aiSuggestionStatusByNode: {},
