@@ -12,6 +12,14 @@ interface VideoPlayerProps {
   nodes: Node[];
 }
 
+function frameToTimestamp(frame: number, fps: number): string {
+  const totalSeconds = frame / fps;
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = Math.floor(totalSeconds % 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 // Frame buffer configuration
 const BUFFER_SIZE = 50; // Maximum frames to keep in buffer
 const PRELOAD_AHEAD = 25; // Frames to preload ahead during playback
@@ -40,10 +48,14 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
   const frameBufferRef = useRef<Map<number, BufferedFrame>>(new Map());
   const loadingFramesRef = useRef<Set<number>>(new Set());
 
+  // Playback speed control
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const SPEED_OPTIONS = [0.25, 0.5, 1, 2, 4, 8];
+
   // requestAnimationFrame state
   const animationFrameRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef<number>(0);
-  const frameDuration = 1000 / fps;
+  const frameDuration = 1000 / (fps * playbackSpeed);
 
   // Pre-indexed bounding boxes by frame for O(1) lookup
   const bboxesByFrame = useMemo(() => {
@@ -347,8 +359,8 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
       <div className="p-4 bg-gray-800">
         {/* Timeline slider */}
         <div className="flex items-center gap-4 mb-2">
-          <span className="text-white text-sm font-mono w-16">
-            {String(currentFrame).padStart(4, '0')}
+          <span className="text-white text-sm font-mono w-40">
+            {frameToTimestamp(currentFrame, fps)} <span className="text-gray-400">F{currentFrame}</span>
           </span>
           <input
             type="range"
@@ -358,8 +370,8 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
             onChange={(e) => setCurrentFrame(Number(e.target.value))}
             className="flex-1 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
           />
-          <span className="text-white text-sm font-mono w-16 text-right">
-            {String(totalFrames - 1).padStart(4, '0')}
+          <span className="text-white text-sm font-mono w-28 text-right" title={`Frame ${totalFrames - 1}`}>
+            {frameToTimestamp(totalFrames - 1, fps)}
           </span>
         </div>
 
@@ -422,9 +434,26 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
           </button>
         </div>
 
-        {/* Frame info */}
-        <div className="flex justify-center mt-2 text-gray-400 text-sm">
-          Frame {currentFrame + 1} of {totalFrames} | {fps} FPS
+        {/* Speed control + Frame info */}
+        <div className="flex items-center justify-center mt-2 gap-4 text-gray-400 text-sm">
+          <div className="flex items-center gap-1">
+            {SPEED_OPTIONS.map((s) => (
+              <button
+                key={s}
+                onClick={() => setPlaybackSpeed(s)}
+                className={`px-1.5 py-0.5 rounded text-xs font-mono transition-colors ${
+                  playbackSpeed === s
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+              >
+                {s}x
+              </button>
+            ))}
+          </div>
+          <span>
+            Frame {currentFrame + 1} of {totalFrames} | {frameToTimestamp(currentFrame, fps)} / {frameToTimestamp(totalFrames - 1, fps)} | {fps} FPS
+          </span>
         </div>
       </div>
     </div>
