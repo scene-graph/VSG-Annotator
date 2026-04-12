@@ -253,6 +253,27 @@ export interface MetadataRevision {
   created_at: string;
 }
 
+// Annotation mode
+export type AnnotationMode = 'nodes' | 'edges' | 'segmentation';
+
+// Mask types
+export interface MaskObject {
+  object_id: number | string;
+  node_id: string;
+  category: string;
+  is_static: boolean;
+  color_hex: string;
+}
+
+export interface MaskMetadata {
+  has_masks: boolean;
+  objects: MaskObject[];
+  total_frames: number;
+  palette: Record<string, string>;
+  mask_format?: 'palette' | 'composite';
+  available_frames?: number[];
+}
+
 // Node modification types
 export interface NodeModify {
   video_id: string;

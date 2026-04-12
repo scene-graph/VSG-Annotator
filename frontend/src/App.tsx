@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Routes, Route, Link, useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAppStore, useFilters, useCurrentUser, useSelectedNode, useSelectedEdge, useAnnotationMode, useBulkAiProgress, useAiProvider, useSetAiProvider, useResetBulkAi, useHydrateAiSuggestions, useClearAiSuggestions } from './store';
 import { usersApi, videosApi } from './services/api';
+import { masksApi } from './services/segmentationApi';
 import { useVideos, useVideo, useNodes, useEdges } from './hooks';
 import { VideoPlayer } from './components/VideoPlayer';
 import { TrackletTimeline } from './components/TrackletTimeline';
@@ -17,7 +18,7 @@ import { SaveButton } from './components/Save';
 import clsx from 'clsx';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import { aiApi } from './services/ai';
-import type { Node } from './types';
+import type { Node, MaskMetadata } from './types';
 
 function isBackendUnavailableError(error: unknown): boolean {
   const msg = ((error as Error | undefined)?.message || '').toLowerCase();
@@ -30,10 +31,22 @@ function isBackendUnavailableError(error: unknown): boolean {
   );
 }
 
+/** Extract the dataset source prefix from a video_id (e.g. "kitti_0002" -> "kitti"). */
+function getVideoSource(videoId: string): string {
+  // Handle multi-word prefixes: epic_kitchen, sav2, mvpd, etc.
+  const prefixes = ['epic_kitchen', 'motchallenge', 'ego4d', 'kitti', 'waymo', 'vidor', 'vipseg', 'pvsg', 'sav2', 'mvpd', 'cityscapes'];
+  for (const p of prefixes) {
+    if (videoId.startsWith(p + '_') || videoId === p) return p;
+  }
+  // Fallback: first segment before underscore
+  return videoId.split('_')[0];
+}
+
 function VideoList() {
   const { data: videos, isLoading, error, refetch } = useVideos();
   const [reloading, setReloading] = useState(false);
   const [reloadResult, setReloadResult] = useState<{ imported: string[]; total_on_disk: number } | null>(null);
+  const [sourceFilter, setSourceFilter] = useState<string>('all');
 
   const handleReload = async () => {
     setReloading(true);
@@ -48,6 +61,24 @@ function VideoList() {
       setReloading(false);
     }
   };
+
+  // Hooks must be called before any early returns (React rules of hooks)
+  const availableSources = useMemo(() => {
+    if (!videos) return [];
+    const counts = new Map<string, number>();
+    for (const v of videos) {
+      const src = getVideoSource(v.video_id);
+      counts.set(src, (counts.get(src) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([source, count]) => ({ source, count }));
+  }, [videos]);
+
+  const filteredVideos = useMemo(() => {
+    if (!videos || sourceFilter === 'all') return videos || [];
+    return videos.filter(v => getVideoSource(v.video_id) === sourceFilter);
+  }, [videos, sourceFilter]);
 
   if (isLoading) {
     return (
@@ -106,8 +137,37 @@ function VideoList() {
         </div>
       </div>
 
+      {/* Source filter */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <button
+          onClick={() => setSourceFilter('all')}
+          className={clsx(
+            'px-3 py-1 rounded-full text-sm font-medium transition-colors',
+            sourceFilter === 'all'
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          )}
+        >
+          All ({videos?.length || 0})
+        </button>
+        {availableSources.map(({ source, count }) => (
+          <button
+            key={source}
+            onClick={() => setSourceFilter(source)}
+            className={clsx(
+              'px-3 py-1 rounded-full text-sm font-medium transition-colors',
+              sourceFilter === source
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            )}
+          >
+            {source} ({count})
+          </button>
+        ))}
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {videos.map((video) => (
+        {filteredVideos.map((video) => (
           <Link
             key={video.id}
             to={`/video/${video.video_id}`}
@@ -256,6 +316,17 @@ function VideoAnnotation() {
   const [showBulkReviewPrompt, setShowBulkReviewPrompt] = useState(false);
 
   const [showMetadata, setShowMetadata] = useState(false);
+
+  // Mask state
+  const [maskMetadata, setMaskMetadata] = useState<MaskMetadata | null>(null);
+  const masksVisible = useAppStore((state) => state.masksVisible);
+  const setMasksVisible = useAppStore((state) => state.setMasksVisible);
+
+  // Fetch mask metadata when video loads
+  useEffect(() => {
+    if (!videoId) return;
+    masksApi.getMetadata(videoId).then(setMaskMetadata).catch(() => setMaskMetadata(null));
+  }, [videoId]);
 
   // Resizable right panel state
   const [rightPanelWidth, setRightPanelWidth] = useState(480);
@@ -527,6 +598,19 @@ function VideoAnnotation() {
           )}
         </div>
         <div className="flex items-center gap-4">
+          {maskMetadata?.has_masks && (
+            <button
+              onClick={() => setMasksVisible(!masksVisible)}
+              className={clsx(
+                'px-3 py-1.5 text-sm font-medium rounded border transition-colors',
+                masksVisible
+                  ? 'bg-green-600 border-green-400 text-white'
+                  : 'bg-gray-700 border-gray-500 text-gray-300 hover:bg-gray-600'
+              )}
+            >
+              {masksVisible ? 'Masks ON' : 'Masks OFF'}
+            </button>
+          )}
           <select
             value={aiProvider}
             onChange={(e) => setAiProvider(e.target.value as 'openai' | 'gemini')}
@@ -620,6 +704,7 @@ function VideoAnnotation() {
                   fps={video.fps || 5}
                   resolution={video.resolution || { width: 1920, height: 1080 }}
                   nodes={nodes}
+                  maskMetadata={maskMetadata}
                 />
               </div>
             </Panel>

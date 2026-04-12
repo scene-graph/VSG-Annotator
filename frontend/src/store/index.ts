@@ -12,7 +12,7 @@ export interface EdgeDragState {
 }
 
 // Annotation mode: viewing nodes or edges
-export type AnnotationMode = 'nodes' | 'edges';
+export type AnnotationMode = 'nodes' | 'edges' | 'segmentation';
 
 // Edge creation state
 export type EdgeCreationStep = 'select-source' | 'select-target' | 'configure';
@@ -94,6 +94,27 @@ interface AppState {
   proceedToTarget: () => void;
   proceedToConfigure: () => void;
   setEdgeCreationType: (edgeType: EdgeType | null) => void;
+
+  // Mask overlay state
+  masksVisible: boolean;
+  setMasksVisible: (v: boolean) => void;
+  maskOpacity: number;
+  setMaskOpacity: (v: number) => void;
+  selectedMaskObject: number | string | null;
+  setSelectedMaskObject: (id: number | string | null) => void;
+  hiddenMaskObjects: Set<number | string>;
+  toggleMaskObject: (id: number | string) => void;
+
+  // Refinement tools
+  segmentationTool: string;
+  setSegmentationTool: (tool: string) => void;
+  pendingBoxes: Array<{ x1: number; y1: number; x2: number; y2: number; label: number }>;
+  addPendingBox: (box: { x1: number; y1: number; x2: number; y2: number; label: number }) => void;
+  clearPendingBoxes: () => void;
+  refinementPreviewB64: string | null;
+  setRefinementPreview: (b64: string | null) => void;
+  isRefining: boolean;
+  setIsRefining: (v: boolean) => void;
 
   // AI suggestions (node attributes)
   aiProvider: 'openai' | 'gemini';
@@ -320,6 +341,33 @@ export const useAppStore = create<AppState>((set) => ({
       edgeCreation: { ...state.edgeCreation, edgeType },
     })),
 
+  // Mask overlay state
+  masksVisible: false,
+  setMasksVisible: (v) => set({ masksVisible: v }),
+  maskOpacity: 0.45,
+  setMaskOpacity: (v) => set({ maskOpacity: v }),
+  selectedMaskObject: null,
+  setSelectedMaskObject: (id) => set({ selectedMaskObject: id }),
+  hiddenMaskObjects: new Set<number | string>(),
+  toggleMaskObject: (id) =>
+    set((state) => {
+      const next = new Set(state.hiddenMaskObjects);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { hiddenMaskObjects: next };
+    }),
+
+  // Refinement tools
+  segmentationTool: 'select',
+  setSegmentationTool: (tool) => set({ segmentationTool: tool }),
+  pendingBoxes: [],
+  addPendingBox: (box) => set((state) => ({ pendingBoxes: [...state.pendingBoxes, box] })),
+  clearPendingBoxes: () => set({ pendingBoxes: [], refinementPreviewB64: null }),
+  refinementPreviewB64: null,
+  setRefinementPreview: (b64) => set({ refinementPreviewB64: b64 }),
+  isRefining: false,
+  setIsRefining: (v) => set({ isRefining: v }),
+
   // AI suggestions
   aiProvider: 'gemini',
   setAiProvider: (provider) => set({ aiProvider: provider }),
@@ -513,3 +561,9 @@ export const useSetAiProvider = () => useAppStore((state) => state.setAiProvider
 export const useResetBulkAi = () => useAppStore((state) => state.resetBulkAi);
 export const useHydrateAiSuggestions = () => useAppStore((state) => state.hydrateAiSuggestions);
 export const useClearAiSuggestions = () => useAppStore((state) => state.clearAiSuggestions);
+
+// Mask overlay selectors
+export const useMasksVisible = () => useAppStore((state) => state.masksVisible);
+export const useMaskOpacity = () => useAppStore((state) => state.maskOpacity);
+export const useSelectedMaskObject = () => useAppStore((state) => state.selectedMaskObject);
+export const useHiddenMaskObjects = () => useAppStore((state) => state.hiddenMaskObjects);

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { useAppStore, useCurrentFrame, useSourceNodes, useTargetNodes, useSelectedNode } from '../../store';
+import { useAppStore, useCurrentFrame, useSourceNodes, useTargetNodes, useSelectedNode, useMasksVisible, useMaskOpacity, useSelectedMaskObject, useHiddenMaskObjects } from '../../store';
 import { videosApi } from '../../services/api';
-import type { Node, BBox } from '../../types';
+import type { Node, BBox, MaskMetadata } from '../../types';
 import { BBoxOverlay } from './BBoxOverlay';
+import { MaskOverlay } from './MaskOverlay';
 
 interface VideoPlayerProps {
   videoId: string;
@@ -10,6 +11,8 @@ interface VideoPlayerProps {
   fps: number;
   resolution: { width: number; height: number };
   nodes: Node[];
+  maskMetadata?: MaskMetadata | null;
+  onMaskObjectClick?: (objectId: number | null) => void;
 }
 
 function frameToTimestamp(frame: number, fps: number): string {
@@ -30,7 +33,7 @@ interface BufferedFrame {
   loaded: boolean;
 }
 
-export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: VideoPlayerProps) {
+export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes, maskMetadata, onMaskObjectClick }: VideoPlayerProps) {
   const currentFrame = useCurrentFrame();
   const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
   const isPlaying = useAppStore((state) => state.isPlaying);
@@ -38,6 +41,12 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
   const sourceNodes = useSourceNodes();
   const targetNodes = useTargetNodes();
   const selectedNode = useSelectedNode();
+
+  // Mask overlay state
+  const masksVisible = useMasksVisible();
+  const maskOpacity = useMaskOpacity();
+  const selectedMaskObject = useSelectedMaskObject();
+  const hiddenMaskObjects = useHiddenMaskObjects();
 
   const [frameReady, setFrameReady] = useState(false);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -344,6 +353,20 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
             className="w-full h-full"
             style={{ imageRendering: 'auto' }}
           />
+          {frameReady && masksVisible && maskMetadata?.has_masks && (
+            <MaskOverlay
+              videoId={videoId}
+              frameIdx={currentFrame}
+              width={displayWidth}
+              height={displayHeight}
+              visible={masksVisible}
+              opacity={maskOpacity}
+              metadata={maskMetadata}
+              selectedObjectId={typeof selectedMaskObject === 'string' ? null : selectedMaskObject}
+              hiddenObjectIds={hiddenMaskObjects as Set<number>}
+              onObjectClick={onMaskObjectClick}
+            />
+          )}
           {frameReady && (
             <BBoxOverlay
               bboxes={getBBoxesForFrame()}

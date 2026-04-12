@@ -14,6 +14,7 @@ from backend.api.routes import (
     videos_router,
 )
 from backend.api.routes.ai import router as ai_router
+from backend.api.routes.masks import router as masks_router
 from backend.config import settings
 from backend.models.database import init_db
 
@@ -51,6 +52,7 @@ app.include_router(export_router, prefix=settings.api_prefix)
 app.include_router(import_router, prefix=settings.api_prefix)
 app.include_router(users_router, prefix=settings.api_prefix)
 app.include_router(ai_router, prefix=settings.api_prefix)
+app.include_router(masks_router, prefix=settings.api_prefix)
 
 
 @app.get("/")

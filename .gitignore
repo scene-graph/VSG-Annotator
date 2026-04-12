@@ -36,3 +36,6 @@ Thumbs.db
 # Logs
 *.log
 backend/annotation_db.sqlite
+
+# Frame cache
+.frame_cache/
