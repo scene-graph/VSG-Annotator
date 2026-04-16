@@ -24,6 +24,15 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     await init_db()
+    # Ensure admin user exists
+    from backend.models.database import get_db, User
+    from sqlalchemy import select
+    async for db in get_db():
+        result = await db.execute(select(User).where(User.username == "admin"))
+        if result.scalar_one_or_none() is None:
+            db.add(User(username="admin"))
+            await db.commit()
+        break
     yield
     # Shutdown
 

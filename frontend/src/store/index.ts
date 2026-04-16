@@ -81,6 +81,10 @@ interface AppState {
   setSourceNodes: (nodeIds: string[]) => void;
   setTargetNodes: (nodeIds: string[]) => void;
 
+  // Video list source filter (persists across navigation)
+  sourceFilter: string;
+  setSourceFilter: (filter: string) => void;
+
   // Edge drag state (for syncing EdgeTimeline drag with TrackletTimeline)
   edgeDragState: EdgeDragState | null;
   setEdgeDragState: (state: EdgeDragState | null) => void;
@@ -251,8 +255,8 @@ export const useAppStore = create<AppState>((set) => ({
     })),
   clearFilters: () => set({ filters: initialFilters }),
 
-  // User
-  currentUser: null,
+  // User — default to admin
+  currentUser: { id: 1, username: 'admin' },
   setCurrentUser: (user) => set({ currentUser: user }),
 
   // UI State
@@ -267,6 +271,10 @@ export const useAppStore = create<AppState>((set) => ({
   targetNodes: [],
   setSourceNodes: (nodeIds) => set({ sourceNodes: nodeIds }),
   setTargetNodes: (nodeIds) => set({ targetNodes: nodeIds }),
+
+  // Video list source filter
+  sourceFilter: 'all',
+  setSourceFilter: (filter) => set({ sourceFilter: filter }),
 
   // Edge drag state
   edgeDragState: null,

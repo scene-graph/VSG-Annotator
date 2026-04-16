@@ -46,7 +46,8 @@ function VideoList() {
   const { data: videos, isLoading, error, refetch } = useVideos();
   const [reloading, setReloading] = useState(false);
   const [reloadResult, setReloadResult] = useState<{ imported: string[]; total_on_disk: number } | null>(null);
-  const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const sourceFilter = useAppStore((state) => state.sourceFilter);
+  const setSourceFilter = useAppStore((state) => state.setSourceFilter);
 
   const handleReload = async () => {
     setReloading(true);
