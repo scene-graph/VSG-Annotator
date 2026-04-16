@@ -3,6 +3,7 @@ import type { Node, Edge, NodeVisualAttributes, NodePhysicalAttributes } from '.
 import { useAppStore, useSelectedNode, useEdges, useCurrentUser, useNodes, useAiSuggestionFrameByNode, useAiSuggestionStatusByNode } from '../../store';
 import { useModifyNode } from '../../hooks/useVideo';
 import { NodeEditor } from './NodeEditor';
+import { getEdgeSubjectFrame } from '../../utils/edgeFrame';
 import clsx from 'clsx';
 
 const PERSON_CATEGORIES = new Set(['person', 'adult', 'child', 'baby']);
@@ -136,15 +137,10 @@ export function NodeReview({ videoId }: NodeReviewProps) {
   const isPerson = PERSON_CATEGORIES.has(selectedNode.category.toLowerCase());
   const selectedNodeAiStatus = aiSuggestionStatusByNode[selectedNode.node_id] ?? 'idle';
 
-  // Handle clicking a related edge
+  // Jump to the subject's best-bbox frame (keeps target bbox visible if present).
   const handleEdgeClick = (edge: Edge) => {
     setSelectedEdge(edge);
-    // Jump to the start of the edge
-    const edgePeriods = edge.time_periods && edge.time_periods.length > 0
-      ? edge.time_periods
-      : [edge.time_period];
-    const startFrame = edgePeriods[0]?.start_frame ?? edge.time_period.start_frame;
-    setCurrentFrame(startFrame);
+    setCurrentFrame(getEdgeSubjectFrame(edge, nodes));
   };
 
   // Determine role of selected node in an edge

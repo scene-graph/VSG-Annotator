@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Edge, MotionAttributes, TimePeriod } from '../../types';
 import { useAppStore, useCurrentUser, useSelectedEdge, useNodes, useEdgeCreation } from '../../store';
+import { getLargestBBoxFrame } from '../../utils/edgeFrame';
 import { useAcceptEdge, useDeleteEdge, useEdgeHistory } from '../../hooks';
 import { EdgeEditor } from './EdgeEditor';
 import { EdgeCreator } from './EdgeCreator';
@@ -20,7 +21,7 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
   const showValidationReasoning = useAppStore((state) => state.showValidationReasoning);
   const setShowValidationReasoning = useAppStore((state) => state.setShowValidationReasoning);
   const nodes = useNodes();
-  const setSelectedNode = useAppStore((state) => state.setSelectedNode);
+  const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
 
   // Edge creation state
   const edgeCreation = useEdgeCreation();
@@ -87,11 +88,14 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     ? selectedEdge.target_category
     : [selectedEdge.target_category];
 
+  // Clicking a source/target pill jumps to that node's own best-bbox frame
+  // while keeping the edge selected, so both subject (cyan) and target (magenta)
+  // overlays remain colored by their edge roles.
   const handleNodeClick = (nodeId: string) => {
     const node = nodes.find(n => n.node_id === nodeId);
-    if (node) {
-      setSelectedNode(node);
-    }
+    if (!node) return;
+    const frame = getLargestBBoxFrame(node);
+    if (frame !== null) setCurrentFrame(frame);
   };
 
   const mergeTimePeriods = (periods: TimePeriod[]) => {
