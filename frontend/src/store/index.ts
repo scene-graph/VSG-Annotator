@@ -239,22 +239,36 @@ export const useAppStore = create<AppState>((set) => ({
 
   // Selected edge (mutually exclusive with selectedNode)
   selectedEdge: null,
-  setSelectedEdge: (edge) => {
-    // When selecting an edge, clear selected node and track source/target nodes
-    if (edge) {
+  setSelectedEdge: (edge) =>
+    set((state) => {
+      if (!edge) {
+        return { selectedEdge: null, sourceNodes: [], targetNodes: [] };
+      }
+
       const sources = Array.isArray(edge.source) ? edge.source : [edge.source];
       const targets = Array.isArray(edge.target) ? edge.target : [edge.target];
-      set({
+
+      // Only fire a tracklet focus request when the user genuinely
+      // switches to a different edge — reselecting the same edge (e.g.
+      // after an accept updates `selectedEdge` in place) shouldn't
+      // yank the object-tracklet panel around.
+      const isNewEdge = state.selectedEdge?.edge_id !== edge.edge_id;
+      const trackletFocusRequest = isNewEdge && sources[0]
+        ? {
+            nodeId: sources[0],
+            nonce: (state.trackletFocusRequest?.nonce ?? 0) + 1,
+          }
+        : state.trackletFocusRequest;
+
+      return {
         selectedEdge: edge,
-        selectedNode: null,  // Clear node selection
+        selectedNode: null,
         sourceNodes: sources,
         targetNodes: targets,
-        annotationMode: 'edges',  // Auto-switch to edges mode
-      });
-    } else {
-      set({ selectedEdge: null, sourceNodes: [], targetNodes: [] });
-    }
-  },
+        annotationMode: 'edges',
+        trackletFocusRequest,
+      };
+    }),
 
   // Selected node (mutually exclusive with selectedEdge)
   selectedNode: null,
