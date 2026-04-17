@@ -295,25 +295,17 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
       const hasNodeSelection = selectedNode !== null;
       const isInCreationMode = edgeCreation.isCreating;
 
-      // Determine color based on context
-      let color = COLORS.unselected;
-      if (isInCreationMode) {
-        // Edge creation mode: highlight source/target nodes
-        if (isSource) {
-          color = COLORS.source;
-        } else if (isTarget) {
-          color = COLORS.target;
-        } else {
-          color = node.is_static ? COLORS.static : COLORS.dynamic;
-        }
-      } else if (isSelected) {
+      // Determine color based on context. Static/dynamic coloring is the
+      // default so dynamic tracklets stay orange even while an edge is
+      // selected — opacity handles focus dimming separately.
+      let color: string;
+      if (isSelected) {
         color = COLORS.selected;
       } else if (isSource) {
         color = COLORS.source;
       } else if (isTarget) {
         color = COLORS.target;
-      } else if (!hasEdgeSelection && !hasNodeSelection) {
-        // No selection: show static/dynamic colors
+      } else {
         color = node.is_static ? COLORS.static : COLORS.dynamic;
       }
 
