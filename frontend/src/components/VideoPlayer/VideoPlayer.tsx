@@ -373,6 +373,7 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes, mask
               scale={scale}
               width={displayWidth}
               height={displayHeight}
+              selectionActive={sourceNodes.length + targetNodes.length > 0 || selectedNode !== null}
             />
           )}
         </div>

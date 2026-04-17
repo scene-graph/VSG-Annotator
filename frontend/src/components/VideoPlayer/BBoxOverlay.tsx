@@ -15,6 +15,10 @@ interface BBoxOverlayProps {
   scale: number;
   width: number;
   height: number;
+  // True when an edge or node is selected, so non-highlighted bboxes should
+  // stay dimmed throughout playback even on frames where the source/target
+  // nodes themselves don't have a bbox.
+  selectionActive?: boolean;
 }
 
 // Color scheme for source/target/selected differentiation
@@ -27,9 +31,10 @@ const COLORS = {
   dimmed: '#374151',  // Dark gray for dimmed objects when selection exists
 };
 
-export function BBoxOverlay({ bboxes, scale, width, height }: BBoxOverlayProps) {
-  // Detect if there's an active selection (any bbox is source/target)
-  const hasSelection = bboxes.some(b => b.role !== null);
+export function BBoxOverlay({ bboxes, scale, width, height, selectionActive = false }: BBoxOverlayProps) {
+  // Dim non-highlighted bboxes whenever an edge is selected (even on frames
+  // where source/target have no bbox) or any role is present in this frame.
+  const hasSelection = selectionActive || bboxes.some(b => b.role !== null);
 
   return (
     <svg
