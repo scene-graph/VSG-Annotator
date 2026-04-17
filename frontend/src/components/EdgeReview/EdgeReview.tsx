@@ -22,6 +22,7 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
   const setShowValidationReasoning = useAppStore((state) => state.setShowValidationReasoning);
   const nodes = useNodes();
   const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
+  const requestTrackletFocus = useAppStore((state) => state.requestTrackletFocus);
 
   // Edge creation state
   const edgeCreation = useEdgeCreation();
@@ -90,12 +91,14 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
 
   // Clicking a source/target pill jumps to that node's own best-bbox frame
   // while keeping the edge selected, so both subject (cyan) and target (magenta)
-  // overlays remain colored by their edge roles.
+  // overlays remain colored by their edge roles. Also asks TrackletTimeline
+  // to scroll that node into view so the user doesn't have to hunt for it.
   const handleNodeClick = (nodeId: string) => {
     const node = nodes.find(n => n.node_id === nodeId);
     if (!node) return;
     const frame = getLargestBBoxFrame(node);
     if (frame !== null) setCurrentFrame(frame);
+    requestTrackletFocus(nodeId);
   };
 
   const mergeTimePeriods = (periods: TimePeriod[]) => {

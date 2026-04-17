@@ -1,7 +1,7 @@
-import { useRef, useEffect, useMemo, useState } from 'react';
+import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import type { Node } from '../../types';
-import { useAppStore, useCurrentFrame, useSelectedEdge, useSelectedNode, useSourceNodes, useTargetNodes, useEdgeDragState, useEdgeCreation } from '../../store';
+import { useAppStore, useCurrentFrame, useSelectedEdge, useSelectedNode, useSourceNodes, useTargetNodes, useEdgeDragState, useEdgeCreation, useTrackletFocusRequest } from '../../store';
 
 interface TrackletTimelineProps {
   nodes: Node[];
@@ -84,6 +84,9 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
   const edgeCreation = useEdgeCreation();
   const toggleSourceNode = useAppStore((state) => state.toggleSourceNode);
   const toggleTargetNode = useAppStore((state) => state.toggleTargetNode);
+
+  // Cross-panel scroll request (e.g. EdgeReview source/target pill clicks)
+  const trackletFocusRequest = useTrackletFocusRequest();
 
   // Track container height
   useEffect(() => {
@@ -504,59 +507,74 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
       });
   }, [sortedNodes, totalFrames, currentFrame, selectedEdge, selectedNode, sourceNodes, targetNodes, setCurrentFrame, setSelectedNode, containerHeight, edgeDragState, edgeCreation, toggleSourceNode, toggleTargetNode]);
 
-  // Track selection changes - mark the node as just selected
+  // Scroll a given tracklet into view. `center: true` places the lane at
+  // the vertical midpoint of the viewport; otherwise it uses the 1/3-from-
+  // top rule for a natural reading position. No-ops if the lane is
+  // already comfortably visible so repeat clicks don't jump the viewport.
+  const scrollNodeIntoView = useCallback(
+    (nodeId: string, options: { center?: boolean } = {}) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const nodeIndex = sortedNodes.findIndex(({ node }) => node.node_id === nodeId);
+      if (nodeIndex === -1) return;
+
+      const nodeY = MARGIN.top + nodeIndex * (LANE_HEIGHT + LANE_PADDING);
+      const nodeBottom = nodeY + LANE_HEIGHT;
+
+      const scrollTop = container.scrollTop;
+      const viewportHeight = container.clientHeight;
+      const visibleTop = scrollTop + 20;
+      const visibleBottom = scrollTop + viewportHeight - 20;
+
+      if (nodeY >= visibleTop && nodeBottom <= visibleBottom) {
+        return;
+      }
+
+      const targetScrollTop = options.center
+        ? nodeY - viewportHeight / 2 + LANE_HEIGHT / 2
+        : nodeY - viewportHeight / 3;
+      const maxScroll = container.scrollHeight - viewportHeight;
+      const clampedScrollTop = Math.max(0, Math.min(targetScrollTop, maxScroll));
+
+      container.scrollTo({
+        top: clampedScrollTop,
+        behavior: 'smooth',
+      });
+    },
+    [sortedNodes]
+  );
+
+  // Track selection changes - mark the node as just selected so the next
+  // render of the tracklet lanes (which may reshuffle sortedNodes) scrolls.
   useEffect(() => {
     if (selectedNode) {
       justSelectedNodeIdRef.current = selectedNode.node_id;
     }
   }, [selectedNode?.node_id]);
 
-  // Scroll to selected node after re-render
+  // Scroll to the just-selected node once lanes are laid out.
   useEffect(() => {
     const nodeId = justSelectedNodeIdRef.current;
-    if (!nodeId || !containerRef.current) return;
-
-    // Use requestAnimationFrame to ensure scroll happens after paint
+    if (!nodeId) return;
     const rafId = requestAnimationFrame(() => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const nodeIndex = sortedNodes.findIndex(({ node }) => node.node_id === nodeId);
-      if (nodeIndex === -1) {
-        justSelectedNodeIdRef.current = null;
-        return;
-      }
-
-      const nodeY = MARGIN.top + nodeIndex * (LANE_HEIGHT + LANE_PADDING);
-      const nodeBottom = nodeY + LANE_HEIGHT;
-
-      // Check if node is already visible (with padding)
-      const scrollTop = container.scrollTop;
-      const containerHeight = container.clientHeight;
-      const visibleTop = scrollTop + 20;
-      const visibleBottom = scrollTop + containerHeight - 20;
-
-      if (nodeY >= visibleTop && nodeBottom <= visibleBottom) {
-        // Already visible, no need to scroll
-        justSelectedNodeIdRef.current = null;
-        return;
-      }
-
-      // Scroll to position node at 1/3 from top (natural viewing position)
-      const targetScrollTop = nodeY - containerHeight / 3;
-      const maxScroll = container.scrollHeight - containerHeight;
-      const clampedScrollTop = Math.max(0, Math.min(targetScrollTop, maxScroll));
-
-      container.scrollTo({
-        top: clampedScrollTop,
-        behavior: 'smooth'
-      });
-
+      scrollNodeIntoView(nodeId);
       justSelectedNodeIdRef.current = null;
     });
-
     return () => cancelAnimationFrame(rafId);
-  }, [sortedNodes]);
+  }, [sortedNodes, scrollNodeIntoView]);
+
+  // React to cross-panel focus requests (EdgeReview source/target pill
+  // clicks). Keyed on the request's nonce so repeat clicks on the same
+  // node still re-fire the scroll.
+  useEffect(() => {
+    if (!trackletFocusRequest) return;
+    const { nodeId } = trackletFocusRequest;
+    const rafId = requestAnimationFrame(() => {
+      scrollNodeIntoView(nodeId, { center: true });
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [trackletFocusRequest?.nonce, trackletFocusRequest?.nodeId, scrollNodeIntoView]);
 
   const contentHeight = Math.max(
     containerHeight,

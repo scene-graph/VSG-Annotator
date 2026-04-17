@@ -1,9 +1,9 @@
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import type { Edge, TimePeriod } from '../../types';
-import { useAppStore, useCurrentFrame, useSelectedEdge, useCurrentUser, useCurrentVideo, useNodes } from '../../store';
+import { useAppStore, useCurrentFrame, useSelectedEdge, useCurrentUser, useCurrentVideo } from '../../store';
 import { useModifyEdge } from '../../hooks/useVideo';
-import { getEdgeSubjectFrame } from '../../utils/edgeFrame';
+import { getEdgeStartFrame } from '../../utils/edgeFrame';
 
 interface EdgeTimelineProps {
   edges: Edge[];
@@ -68,7 +68,6 @@ export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
   const currentUser = useCurrentUser();
   const currentVideo = useCurrentVideo();
   const setEdges = useAppStore((state) => state.setEdges);
-  const nodes = useNodes();
 
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [showUserWarning, setShowUserWarning] = useState(false);
@@ -346,7 +345,7 @@ export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
         .text(`${edge.predicate}`)
         .on('click', () => {
           setSelectedEdge(edge);
-          setCurrentFrame(getEdgeSubjectFrame(edge, nodes));
+          setCurrentFrame(getEdgeStartFrame(edge));
         });
 
       if (showLeftReviewedDot && leftRevisionDotColor) {
@@ -532,7 +531,7 @@ export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
       .attr('cy', MARGIN.top)
       .attr('r', 6)
       .attr('fill', '#ef4444');
-  }, [sortedEdges, totalFrames, currentFrame, selectedEdge, setSelectedEdge, setCurrentFrame, containerHeight, dragState, createDragBehavior, nodes]);
+  }, [sortedEdges, totalFrames, currentFrame, selectedEdge, setSelectedEdge, setCurrentFrame, containerHeight, dragState, createDragBehavior]);
 
   // Scroll to modified edge after re-render
   useEffect(() => {

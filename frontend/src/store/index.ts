@@ -19,6 +19,15 @@ export interface PendingEdgeEdit {
   commit: () => Promise<void>;
 }
 
+// One-shot request from other panels (e.g. EdgeReview clicking a
+// source/target pill) asking the TrackletTimeline to scroll the given
+// node into view. The nonce bumps on every request so repeat clicks on
+// the same node still trigger a fresh scroll.
+export interface TrackletFocusRequest {
+  nodeId: string;
+  nonce: number;
+}
+
 // Annotation mode: viewing nodes or edges
 export type AnnotationMode = 'nodes' | 'edges' | 'segmentation';
 
@@ -101,6 +110,11 @@ interface AppState {
   // uncommitted changes; top-row SaveButton invokes commit before syncing.
   pendingEdgeEdit: PendingEdgeEdit | null;
   setPendingEdgeEdit: (edit: PendingEdgeEdit | null) => void;
+
+  // Cross-panel scroll intent: EdgeReview pill clicks fire
+  // requestTrackletFocus to ask TrackletTimeline to center a node.
+  trackletFocusRequest: TrackletFocusRequest | null;
+  requestTrackletFocus: (nodeId: string) => void;
 
   // Edge creation state
   edgeCreation: EdgeCreationState;
@@ -300,6 +314,16 @@ export const useAppStore = create<AppState>((set) => ({
   // Pending edit in EdgeEditor
   pendingEdgeEdit: null,
   setPendingEdgeEdit: (edit) => set({ pendingEdgeEdit: edit }),
+
+  // Tracklet focus request
+  trackletFocusRequest: null,
+  requestTrackletFocus: (nodeId) =>
+    set((state) => ({
+      trackletFocusRequest: {
+        nodeId,
+        nonce: (state.trackletFocusRequest?.nonce ?? 0) + 1,
+      },
+    })),
 
   // Edge creation state
   edgeCreation: {
@@ -584,6 +608,7 @@ export const useSourceNodes = () => useAppStore((state) => state.sourceNodes);
 export const useTargetNodes = () => useAppStore((state) => state.targetNodes);
 export const useEdgeDragState = () => useAppStore((state) => state.edgeDragState);
 export const usePendingEdgeEdit = () => useAppStore((state) => state.pendingEdgeEdit);
+export const useTrackletFocusRequest = () => useAppStore((state) => state.trackletFocusRequest);
 export const useEdgeCreation = () => useAppStore((state) => state.edgeCreation);
 export const useAiSuggestionsByNode = () => useAppStore((state) => state.aiSuggestionsByNode);
 export const useAiSuggestionStatusByNode = () => useAppStore((state) => state.aiSuggestionStatusByNode);
