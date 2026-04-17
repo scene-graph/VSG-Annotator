@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { useAppStore, useCurrentFrame, useSourceNodes, useTargetNodes, useSelectedNode, useMasksVisible, useMaskOpacity, useSelectedMaskObject, useHiddenMaskObjects } from '../../store';
+import { useAppStore, useCurrentFrame, useSourceNodes, useTargetNodes, useSelectedNode, useMasksVisible, useMaskOpacity, useSelectedMaskObject, useHiddenMaskObjects, useBboxesVisible } from '../../store';
 import { videosApi } from '../../services/api';
 import type { Node, BBox, MaskMetadata } from '../../types';
 import { BBoxOverlay } from './BBoxOverlay';
@@ -41,6 +41,7 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes, mask
   const sourceNodes = useSourceNodes();
   const targetNodes = useTargetNodes();
   const selectedNode = useSelectedNode();
+  const bboxesVisible = useBboxesVisible();
 
   // Mask overlay state
   const masksVisible = useMasksVisible();
@@ -367,7 +368,7 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes, mask
               onObjectClick={onMaskObjectClick}
             />
           )}
-          {frameReady && (
+          {frameReady && bboxesVisible && (
             <BBoxOverlay
               bboxes={getBBoxesForFrame()}
               scale={scale}

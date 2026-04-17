@@ -99,6 +99,10 @@ interface AppState {
   proceedToConfigure: () => void;
   setEdgeCreationType: (edgeType: EdgeType | null) => void;
 
+  // BBox overlay state
+  bboxesVisible: boolean;
+  setBboxesVisible: (v: boolean) => void;
+
   // Mask overlay state
   masksVisible: boolean;
   setMasksVisible: (v: boolean) => void;
@@ -349,6 +353,10 @@ export const useAppStore = create<AppState>((set) => ({
       edgeCreation: { ...state.edgeCreation, edgeType },
     })),
 
+  // BBox overlay state
+  bboxesVisible: true,
+  setBboxesVisible: (v) => set({ bboxesVisible: v }),
+
   // Mask overlay state
   masksVisible: false,
   setMasksVisible: (v) => set({ masksVisible: v }),
@@ -569,6 +577,9 @@ export const useSetAiProvider = () => useAppStore((state) => state.setAiProvider
 export const useResetBulkAi = () => useAppStore((state) => state.resetBulkAi);
 export const useHydrateAiSuggestions = () => useAppStore((state) => state.hydrateAiSuggestions);
 export const useClearAiSuggestions = () => useAppStore((state) => state.clearAiSuggestions);
+
+// BBox overlay selector
+export const useBboxesVisible = () => useAppStore((state) => state.bboxesVisible);
 
 // Mask overlay selectors
 export const useMasksVisible = () => useAppStore((state) => state.masksVisible);

@@ -323,6 +323,10 @@ function VideoAnnotation() {
   const masksVisible = useAppStore((state) => state.masksVisible);
   const setMasksVisible = useAppStore((state) => state.setMasksVisible);
 
+  // BBox overlay state
+  const bboxesVisible = useAppStore((state) => state.bboxesVisible);
+  const setBboxesVisible = useAppStore((state) => state.setBboxesVisible);
+
   // Fetch mask metadata when video loads
   useEffect(() => {
     if (!videoId) return;
@@ -599,6 +603,17 @@ function VideoAnnotation() {
           )}
         </div>
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => setBboxesVisible(!bboxesVisible)}
+            className={clsx(
+              'px-3 py-1.5 text-sm font-medium rounded border transition-colors',
+              bboxesVisible
+                ? 'bg-green-600 border-green-400 text-white'
+                : 'bg-gray-700 border-gray-500 text-gray-300 hover:bg-gray-600'
+            )}
+          >
+            {bboxesVisible ? 'BBoxes ON' : 'BBoxes OFF'}
+          </button>
           {maskMetadata?.has_masks && (
             <button
               onClick={() => setMasksVisible(!masksVisible)}
