@@ -119,11 +119,20 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
       return;
     }
 
-    const updatedPeriods = changes.time_periods
+    // Every accept revision must snapshot the full effective state the
+    // user is approving. The backend overlay only reads the latest
+    // revision per edge, so an accept with null `new_*` fields masks
+    // earlier modifies (e.g. an EdgeTimeline drag) and the next refetch
+    // reverts to VSG. Falling back to `selectedEdge` — which already
+    // reflects prior revisions via the overlay — keeps the drag's state
+    // in the newly recorded accept.
+    const effectivePeriods = changes.time_periods
       ?? (selectedEdge.time_periods && selectedEdge.time_periods.length > 0
         ? selectedEdge.time_periods
         : [selectedEdge.time_period]);
-    const mergedPeriod = mergeTimePeriods(updatedPeriods);
+    const effectivePredicate = changes.predicate ?? selectedEdge.predicate;
+    const effectiveAttributes = changes.attributes ?? selectedEdge.attributes;
+    const mergedPeriod = mergeTimePeriods(effectivePeriods);
 
     setEdgeSaveError(null);
     setIsSavingEdge(true);
@@ -133,19 +142,19 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
         edge_id: selectedEdge.edge_id,
         edge_type: selectedEdge.edge_type,
         user_id: currentUser.id,
-        new_predicate: changes.predicate,
-        new_time_periods: changes.time_periods,
-        new_attributes: changes.attributes,
+        new_predicate: effectivePredicate,
+        new_time_periods: effectivePeriods,
+        new_attributes: effectiveAttributes,
         notes: notes || undefined,
       });
 
       // Build and apply updated edge only after server confirms save+accept.
       const updatedEdge: Edge = {
         ...selectedEdge,
-        predicate: changes.predicate ?? selectedEdge.predicate,
+        predicate: effectivePredicate,
         time_period: mergedPeriod,
-        time_periods: updatedPeriods,
-        attributes: changes.attributes ?? selectedEdge.attributes,
+        time_periods: effectivePeriods,
+        attributes: effectiveAttributes,
         has_revision: true,
         revision_action: 'accept',
       };
