@@ -89,6 +89,18 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     ? selectedEdge.target_category
     : [selectedEdge.target_category];
 
+  // node_id is immutable after a static/dynamic flip, so when a source/
+  // target pill's id no longer matches its current type we render an
+  // inline "(now static)" / "(now dynamic)" notice next to the id so the
+  // reviewer can see the discrepancy at a glance.
+  const getNodeTypeFlip = (nodeId: string): 'static' | 'dynamic' | null => {
+    const node = nodes.find((n) => n.node_id === nodeId);
+    if (!node) return null;
+    if (node.original_is_static == null) return null;
+    if (node.original_is_static === node.is_static) return null;
+    return node.is_static ? 'static' : 'dynamic';
+  };
+
   // Clicking a source/target pill jumps to that node's own best-bbox frame
   // while keeping the edge selected, so both subject (cyan) and target (magenta)
   // overlays remain colored by their edge roles. Also asks TrackletTimeline
@@ -240,20 +252,31 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
             <div className="flex-1">
               <div className="text-xs uppercase mb-1" style={{ color: '#00d4ff' }}>Source</div>
               <div className="text-white text-sm">
-                {sourceCategories.map((cat, i) => (
-                  <span
-                    key={sources[i]}
-                    onClick={() => handleNodeClick(sources[i])}
-                    className="inline-block px-2 py-1 rounded mr-1 mb-1 border cursor-pointer hover:opacity-80 transition-opacity"
-                    style={{
-                      backgroundColor: 'rgba(0, 212, 255, 0.15)',
-                      borderColor: '#00d4ff',
-                    }}
-                  >
-                    <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: '#00d4ff' }} />
-                    {cat} <span className="text-gray-400">({sources[i]})</span>
-                  </span>
-                ))}
+                {sourceCategories.map((cat, i) => {
+                  const flip = getNodeTypeFlip(sources[i]);
+                  return (
+                    <span
+                      key={sources[i]}
+                      onClick={() => handleNodeClick(sources[i])}
+                      className="inline-block px-2 py-1 rounded mr-1 mb-1 border cursor-pointer hover:opacity-80 transition-opacity"
+                      style={{
+                        backgroundColor: 'rgba(0, 212, 255, 0.15)',
+                        borderColor: '#00d4ff',
+                      }}
+                    >
+                      <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: '#00d4ff' }} />
+                      {cat} <span className="text-gray-400">({sources[i]})</span>
+                      {flip && (
+                        <span
+                          className="ml-1.5 px-1 py-0.5 rounded text-[10px] bg-yellow-500/20 text-yellow-300 align-middle"
+                          title={`node_id is kept immutable; this node is now ${flip}.`}
+                        >
+                          now {flip}
+                        </span>
+                      )}
+                    </span>
+                  );
+                })}
               </div>
             </div>
             <div className="text-orange-400 font-semibold px-3 text-center">
@@ -265,20 +288,31 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
             <div className="flex-1 text-right">
               <div className="text-xs uppercase mb-1" style={{ color: '#ff00d4' }}>Target</div>
               <div className="text-white text-sm">
-                {targetCategories.map((cat, i) => (
-                  <span
-                    key={targets[i]}
-                    onClick={() => handleNodeClick(targets[i])}
-                    className="inline-block px-2 py-1 rounded mr-1 mb-1 border cursor-pointer hover:opacity-80 transition-opacity"
-                    style={{
-                      backgroundColor: 'rgba(255, 0, 212, 0.15)',
-                      borderColor: '#ff00d4',
-                    }}
-                  >
-                    <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: '#ff00d4' }} />
-                    {cat} <span className="text-gray-400">({targets[i]})</span>
-                  </span>
-                ))}
+                {targetCategories.map((cat, i) => {
+                  const flip = getNodeTypeFlip(targets[i]);
+                  return (
+                    <span
+                      key={targets[i]}
+                      onClick={() => handleNodeClick(targets[i])}
+                      className="inline-block px-2 py-1 rounded mr-1 mb-1 border cursor-pointer hover:opacity-80 transition-opacity"
+                      style={{
+                        backgroundColor: 'rgba(255, 0, 212, 0.15)',
+                        borderColor: '#ff00d4',
+                      }}
+                    >
+                      <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: '#ff00d4' }} />
+                      {cat} <span className="text-gray-400">({targets[i]})</span>
+                      {flip && (
+                        <span
+                          className="ml-1.5 px-1 py-0.5 rounded text-[10px] bg-yellow-500/20 text-yellow-300 align-middle"
+                          title={`node_id is kept immutable; this node is now ${flip}.`}
+                        >
+                          now {flip}
+                        </span>
+                      )}
+                    </span>
+                  );
+                })}
               </div>
             </div>
           </div>

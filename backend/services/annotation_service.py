@@ -425,7 +425,20 @@ class AnnotationService:
         return edges
 
     async def _reclassify_edges_by_nodes(self, edges: list[EdgeResponse]) -> list[EdgeResponse]:
-        """Update edge_type based on current node static/dynamic status."""
+        """Update edge_type based on current node static/dynamic status.
+
+        Derived side effects driven by node static/dynamic flips:
+          * When an edge is reclassified to ``static``, overwrite its
+            time_period(s) with the full video span, since static objects
+            are assumed not to move and the relation holds for the whole
+            video.
+          * On group ``fg_bg`` edges, drop sources whose type flipped to
+            static and targets whose type flipped to dynamic (those members
+            no longer satisfy the fg_bg contract of dynamic→static). If a
+            side is emptied, the edge is dropped entirely.
+        """
+        from backend.models.schemas import TimePeriod
+
         # Build node_id -> is_static map with revisions applied
         all_nodes = list(self.vsg_loader.get_all_nodes().values())
         node_map = {n.node_id: n.is_static for n in all_nodes}
@@ -435,6 +448,11 @@ class AnnotationService:
             latest_rev = await self.tracker.get_latest_node_revision(self._video_id, node.node_id)
             if latest_rev and latest_rev.new_is_static is not None:
                 node_map[node.node_id] = latest_rev.new_is_static
+
+        total_frames = self.vsg_loader.total_frames
+        # Guard against zero-frame or unknown metadata
+        full_span_end = max(total_frames - 1, 0)
+        full_span = TimePeriod(start_frame=0, end_frame=full_span_end)
 
         def classify_edge(edge: EdgeResponse) -> tuple[str, Optional[str]]:
             sources = edge.source if isinstance(edge.source, list) else [edge.source]
@@ -456,13 +474,73 @@ class AnnotationService:
                 return "dynamic", None
             return "fg_bg", None
 
+        reconciled: list[EdgeResponse] = []
         for edge in edges:
+            # 1) Prune group-edge members whose type no longer fits the fg_bg
+            #    contract. Only true group edges (>1 source or >1 target)
+            #    are pruned; singleton 1:1 fg_bg edges are left intact so
+            #    classify_edge below can transition them to ``static`` when
+            #    both endpoints become static.
+            is_group_fg_bg = (
+                edge.edge_type == "fg_bg"
+                and isinstance(edge.source, list)
+                and isinstance(edge.target, list)
+                and (len(edge.source) > 1 or len(edge.target) > 1)
+            )
+            if is_group_fg_bg:
+                kept_sources = [s for s in edge.source if not node_map.get(s, False)]
+                kept_targets = [t for t in edge.target if node_map.get(t, False)]
+
+                if not kept_sources or not kept_targets:
+                    # Drop the edge entirely — there are no valid
+                    # dynamic→static pairings left.
+                    continue
+
+                if kept_sources != edge.source or kept_targets != edge.target:
+                    src_cats = edge.source_category if isinstance(edge.source_category, list) else [edge.source_category]
+                    tgt_cats = edge.target_category if isinstance(edge.target_category, list) else [edge.target_category]
+                    source_cat_map = dict(zip(edge.source, src_cats))
+                    target_cat_map = dict(zip(edge.target, tgt_cats))
+                    edge.source = kept_sources
+                    edge.target = kept_targets
+                    edge.source_category = [source_cat_map.get(s, "unknown") for s in kept_sources]
+                    edge.target_category = [target_cat_map.get(t, "unknown") for t in kept_targets]
+                    note = "Group members dropped after node type change"
+                    if not edge.validation_reasoning_round2:
+                        edge.validation_reasoning_round2 = note
+
+            # 2) Reclassify edge_type from node types
+            prev_type = edge.edge_type
             new_type, note = classify_edge(edge)
             edge.edge_type = new_type
             if note and not edge.validation_reasoning_round2:
                 edge.validation_reasoning_round2 = note
 
-        return edges
+            # 2b) When transitioning from fg_bg to a 1:1 static or dynamic
+            #     edge, collapse singleton lists to strings so the response
+            #     shape matches the StaticEdge/DynamicEdge contract.
+            if new_type in ("static", "dynamic") and new_type != prev_type:
+                if isinstance(edge.source, list) and len(edge.source) == 1:
+                    edge.source = edge.source[0]
+                if isinstance(edge.target, list) and len(edge.target) == 1:
+                    edge.target = edge.target[0]
+                if isinstance(edge.source_category, list) and len(edge.source_category) == 1:
+                    edge.source_category = edge.source_category[0]
+                if isinstance(edge.target_category, list) and len(edge.target_category) == 1:
+                    edge.target_category = edge.target_category[0]
+
+            # 3) When an edge transitions into ``static`` from a non-static
+            #    type, force the full-video span. Static relations are
+            #    assumed to hold for the entire video. We only overwrite on
+            #    transition so that pre-existing static edges keep any
+            #    user-annotated narrow spans.
+            if new_type == "static" and prev_type != "static":
+                edge.time_period = full_span
+                edge.time_periods = [full_span]
+
+            reconciled.append(edge)
+
+        return reconciled
 
     async def get_created_edges(self, revision_map: dict = None) -> list[EdgeResponse]:
         """Get all newly created edges as EdgeResponse objects.

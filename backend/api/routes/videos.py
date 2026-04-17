@@ -455,6 +455,7 @@ async def get_nodes(
     from backend.core.revision_tracker import RevisionTracker
     tracker = RevisionTracker(db)
     for node in nodes:
+        original_is_static = node.is_static
         latest_rev = await tracker.get_latest_node_revision(video_id, node.node_id)
         if latest_rev:
             if latest_rev.new_is_static is not None:
@@ -475,6 +476,8 @@ async def get_nodes(
         else:
             node.has_revision = False
             node.revision_action = None
+        if node.is_static != original_is_static:
+            node.original_is_static = original_is_static
 
     # Filter by static/dynamic
     if is_static is not None:
@@ -513,6 +516,7 @@ async def get_node(
 
     from backend.core.revision_tracker import RevisionTracker
     tracker = RevisionTracker(db)
+    original_is_static = node.is_static
     latest_rev = await tracker.get_latest_node_revision(video_id, node.node_id)
     if latest_rev:
         if latest_rev.new_is_static is not None:
@@ -533,6 +537,8 @@ async def get_node(
     else:
         node.has_revision = False
         node.revision_action = None
+    if node.is_static != original_is_static:
+        node.original_is_static = original_is_static
 
     return node
 

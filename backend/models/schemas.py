@@ -91,6 +91,9 @@ class NodeResponse(BaseModel):
     bboxes_by_frame: dict[str, BBox]
     has_revision: bool = False
     revision_action: Optional[str] = None
+    # Set to the VSG-original is_static value only when a revision has flipped it.
+    # Frontend uses this to render a "(now static)" / "(now dynamic)" badge.
+    original_is_static: Optional[bool] = None
 
 
 # ============================================================================

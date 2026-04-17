@@ -96,16 +96,24 @@ export function NodeReview({ videoId }: NodeReviewProps) {
       });
 
       // Optimistic update: update the node in the store
+      const nextIsStatic = changes.is_static ?? selectedNode.is_static;
+      // Carry the VSG-original is_static through so the "type changed"
+      // badge is visible immediately after save, without waiting for a
+      // refetch. If the user reverted the change, clear the marker.
+      const originalIsStatic =
+        selectedNode.original_is_static ?? selectedNode.is_static;
+      const typeChanged = nextIsStatic !== originalIsStatic;
       const updatedNode: Node = {
         ...selectedNode,
         category: changes.category ?? selectedNode.category,
-        is_static: changes.is_static ?? selectedNode.is_static,
+        is_static: nextIsStatic,
         attributes: {
           visual: changes.visual || selectedNode.attributes.visual,
           physical: changes.physical || selectedNode.attributes.physical,
         },
         has_revision: true,
         revision_action: 'modify',
+        original_is_static: typeChanged ? originalIsStatic : null,
       };
 
       // Update nodes in store
@@ -136,6 +144,12 @@ export function NodeReview({ videoId }: NodeReviewProps) {
   const nodeTypeBgColor = selectedNode.is_static ? 'bg-gray-500' : 'bg-orange-500';
   const isPerson = PERSON_CATEGORIES.has(selectedNode.category.toLowerCase());
   const selectedNodeAiStatus = aiSuggestionStatusByNode[selectedNode.node_id] ?? 'idle';
+  // node_id is immutable even after a static/dynamic flip, so surface a
+  // small "(now static)"/"(now dynamic)" badge next to the id whenever a
+  // revision has changed the node type.
+  const nodeTypeFlipped =
+    selectedNode.original_is_static != null &&
+    selectedNode.original_is_static !== selectedNode.is_static;
 
   // Jump to the start of the edge's annotated time period so the playhead
   // lands at a predictable, user-tracked frame rather than inside the span.
@@ -164,6 +178,14 @@ export function NodeReview({ videoId }: NodeReviewProps) {
             {selectedNode.is_static ? 'static' : 'dynamic'}
           </span>
           <span className="text-white font-mono text-sm">{selectedNode.node_id}</span>
+          {nodeTypeFlipped && (
+            <span
+              className="px-1.5 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-300"
+              title={`Originally ${selectedNode.original_is_static ? 'static' : 'dynamic'}; changed via node-type edit. node_id is kept immutable.`}
+            >
+              now {selectedNode.is_static ? 'static' : 'dynamic'}
+            </span>
+          )}
           {selectedNodeAiStatus !== 'idle' && (
             <span
               className={clsx(

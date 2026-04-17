@@ -44,6 +44,10 @@ export interface Node {
   bboxes_by_frame: Record<string, BBox>;
   has_revision?: boolean;
   revision_action?: string;
+  // Present only when a revision has flipped is_static away from the
+  // VSG-original value. node_id itself is immutable, so the UI uses
+  // this to show a "(now static)"/"(now dynamic)" notice.
+  original_is_static?: boolean | null;
 }
 
 // Edge types
