@@ -160,6 +160,10 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setEdgeSaveError(message);
+      // Re-throw so outer callers (e.g. the top-row SaveButton that
+      // triggered a commit before its sync) can surface the failure
+      // and skip the subsequent sync step.
+      throw error;
     } finally {
       setIsSavingEdge(false);
     }

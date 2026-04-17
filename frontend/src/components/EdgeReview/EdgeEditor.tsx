@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from 'react';
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import type { Edge, MotionAttributes, TimePeriod } from '../../types';
 import { usePredicates } from '../../hooks';
 import { useAIEdgeSuggestions } from '../../hooks/useAI';
@@ -45,9 +45,17 @@ export function EdgeEditor({
   const [debugMode, setDebugMode] = useState(true);
   const [showDebugModal, setShowDebugModal] = useState(false);
   const [debugInfo, setDebugInfo] = useState<any>(null);
+  // Tracks whether the user has actually modified a field in this panel
+  // since the last reset/save. While false, any prop-level change to the
+  // edge (e.g. EdgeTimeline drag, edges query refetch) is synced into
+  // local state so "Save" reflects the current server view. Once the
+  // user starts typing we stop syncing, so their in-flight edits are
+  // never silently overwritten by a background update.
+  const [userTouched, setUserTouched] = useState(false);
 
   const aiProvider = useAppStore((state) => state.aiProvider);
   const currentFrame = useAppStore((state) => state.currentFrame);
+  const setPendingEdgeEdit = useAppStore((state) => state.setPendingEdgeEdit);
   const aiMutation = useAIEdgeSuggestions();
   const abortRef = useRef<AbortController | null>(null);
 
@@ -61,8 +69,7 @@ export function EdgeEditor({
       .sort((a, b) => a.start_frame - b.start_frame);
   };
 
-  // Sync local state when edge prop changes (fixes stale state after modifications)
-  useEffect(() => {
+  const syncLocalStateFromEdge = () => {
     setPredicate(edge.predicate);
     const initialSegments = edge.time_periods && edge.time_periods.length > 0
       ? edge.time_periods
@@ -71,10 +78,35 @@ export function EdgeEditor({
     setVelocity(edge.attributes?.velocity || 'moderate');
     setDirection(edge.attributes?.direction || 'none');
     setTrajectory(edge.attributes?.trajectory || 'curved');
+  };
+
+  // On edge switch: fully reset local state and clear the touched flag.
+  useEffect(() => {
+    syncLocalStateFromEdge();
     setAiSuggestion(null);
-  }, [edge.edge_id, edge.predicate, edge.time_period.start_frame, edge.time_period.end_frame,
-      edge.time_periods,
-      edge.attributes?.velocity, edge.attributes?.direction, edge.attributes?.trajectory]);
+    setUserTouched(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edge.edge_id]);
+
+  // On same-edge prop updates (EdgeTimeline drag, query refetch, store
+  // optimistic update): pull the new values into local state only while
+  // the user hasn't started editing. This is what lets a drag-then-Save
+  // work — otherwise the untouched local "segments" would still hold the
+  // pre-drag values and Save would commit them, reverting the drag.
+  useEffect(() => {
+    if (userTouched) return;
+    syncLocalStateFromEdge();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    edge.predicate,
+    edge.time_period.start_frame,
+    edge.time_period.end_frame,
+    edge.time_periods,
+    edge.attributes?.velocity,
+    edge.attributes?.direction,
+    edge.attributes?.trajectory,
+    userTouched,
+  ]);
 
   useEffect(() => {
     setAiFrame(currentFrame);
@@ -152,6 +184,7 @@ export function EdgeEditor({
   };
 
   const applyAISuggestion = (attribute: 'predicate' | 'velocity' | 'direction' | 'trajectory', value: string) => {
+    setUserTouched(true);
     if (attribute === 'predicate') {
       setPredicate(value);
       return;
@@ -178,10 +211,11 @@ export function EdgeEditor({
     setAiSuggestion(null);
   };
 
-  const handleSave = () => {
-    if (isSaving) {
-      return;
-    }
+  const computeChanges = (): {
+    predicate?: string;
+    time_periods?: TimePeriod[];
+    attributes?: MotionAttributes;
+  } => {
     const changes: {
       predicate?: string;
       time_periods?: TimePeriod[];
@@ -209,10 +243,62 @@ export function EdgeEditor({
       }
     }
 
-    onSave(changes);
+    return changes;
   };
 
+  const handleSave = async (): Promise<void> => {
+    if (isSaving) {
+      return;
+    }
+    await Promise.resolve(onSave(computeChanges()));
+    // After a successful save, local state matches the server; clearing
+    // touched lets subsequent drag/refetch updates sync again.
+    setUserTouched(false);
+  };
+
+  const isDirty = useMemo(() => {
+    const changes = computeChanges();
+    return (
+      changes.predicate !== undefined ||
+      changes.time_periods !== undefined ||
+      changes.attributes !== undefined
+    );
+    // computeChanges is stable within a render; deps track every input it reads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [predicate, segments, velocity, direction, trajectory, edge]);
+
+  // Expose the current edit to the top-row SaveButton via the store so
+  // clicking either Save persists the same in-flight changes. The ref
+  // lets the commit closure always invoke the latest handleSave.
+  const handleSaveRef = useRef(handleSave);
+  handleSaveRef.current = handleSave;
+
+  useEffect(() => {
+    // Only register a pending edit when the user has actually edited a
+    // field AND the local state still differs from the edge prop. This
+    // prevents a transient dirty window (where a drag updated the edge
+    // prop but the sync effect hasn't caught up yet) from surfacing as
+    // a pending commit — which previously caused top-row Save to revert
+    // the drag.
+    if (userTouched && isDirty) {
+      setPendingEdgeEdit({
+        edgeId: edge.edge_id,
+        commit: () => handleSaveRef.current(),
+      });
+    } else {
+      setPendingEdgeEdit(null);
+    }
+  }, [userTouched, isDirty, edge.edge_id, setPendingEdgeEdit]);
+
+  useEffect(
+    () => () => {
+      setPendingEdgeEdit(null);
+    },
+    [setPendingEdgeEdit]
+  );
+
   const updateSegment = (index: number, updates: Partial<TimePeriod>) => {
+    setUserTouched(true);
     setSegments((prev) => {
       const next = prev.map((seg, i) => {
         if (i !== index) return seg;
@@ -231,6 +317,7 @@ export function EdgeEditor({
   };
 
   const addSegment = () => {
+    setUserTouched(true);
     setSegments((prev) => {
       const last = prev[prev.length - 1];
       const start = last ? last.end_frame + 1 : 0;
@@ -239,6 +326,7 @@ export function EdgeEditor({
   };
 
   const removeSegment = (index: number) => {
+    setUserTouched(true);
     setSegments((prev) => {
       if (prev.length <= 1) return prev;
       return prev.filter((_, i) => i !== index);
@@ -259,7 +347,10 @@ export function EdgeEditor({
         <label className="text-gray-400 text-xs uppercase block mb-1">Predicate</label>
         <select
           value={predicate}
-          onChange={(e) => setPredicate(e.target.value)}
+          onChange={(e) => {
+            setUserTouched(true);
+            setPredicate(e.target.value);
+          }}
           className="w-full bg-gray-700 text-white rounded p-2 text-sm"
         >
           {predicates.map((p) => (
@@ -474,7 +565,10 @@ export function EdgeEditor({
                       <div>
                         <select
                           value={row.value}
-                          onChange={(e) => row.setValue(e.target.value)}
+                          onChange={(e) => {
+                            setUserTouched(true);
+                            row.setValue(e.target.value);
+                          }}
                           className="w-full bg-gray-700 text-white rounded p-1.5 text-sm"
                         >
                           {row.options.map((opt) => (
@@ -524,7 +618,11 @@ export function EdgeEditor({
       )}
       <div className="flex gap-2">
         <button
-          onClick={handleSave}
+          onClick={() => {
+            // Swallow rejection: EdgeReview already surfaces the error
+            // via the saveError banner.
+            handleSave().catch(() => {});
+          }}
           disabled={isSaving || isDeleting}
           className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white py-2 rounded font-semibold"
         >

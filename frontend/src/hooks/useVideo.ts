@@ -298,12 +298,29 @@ export function useImportVsg() {
   });
 }
 
+// Upper bound for how long sync() will wait for in-flight mutations to
+// settle before forcing a refetch. 10s is well above any realistic
+// accept/modify/create roundtrip, so hitting this cap indicates the
+// server is unreachable and a stale refetch is the lesser evil.
+const SYNC_MUTATION_TIMEOUT_MS = 10_000;
+const SYNC_POLL_INTERVAL_MS = 50;
+
 export function useSyncData(videoId: string) {
   const queryClient = useQueryClient();
   const isMutating = useIsMutating();
 
   const sync = async () => {
-    // Wait for any pending mutations to settle
+    // Wait for any in-flight mutations (e.g. the EdgeTimeline drag's
+    // fire-and-forget modify) to fully commit on the server before we
+    // invalidate and refetch. Otherwise the refetch races the POST and
+    // can return pre-revision data, silently overwriting the user's
+    // optimistic update.
+    const deadline = Date.now() + SYNC_MUTATION_TIMEOUT_MS;
+    while (queryClient.isMutating() > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
+    }
+
+    // Cancel in-flight queries so they don't clash with the refetch.
     await queryClient.cancelQueries();
 
     // Invalidate and refetch all video-related queries

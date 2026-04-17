@@ -11,6 +11,14 @@ export interface EdgeDragState {
   currentEndFrame: number;
 }
 
+// Unsaved edit in the right-panel EdgeEditor. The top-row SaveButton
+// reads this and calls commit() before running its sync, so "Save" in
+// both places persists in-flight edits instead of dropping them.
+export interface PendingEdgeEdit {
+  edgeId: string;
+  commit: () => Promise<void>;
+}
+
 // Annotation mode: viewing nodes or edges
 export type AnnotationMode = 'nodes' | 'edges' | 'segmentation';
 
@@ -88,6 +96,11 @@ interface AppState {
   // Edge drag state (for syncing EdgeTimeline drag with TrackletTimeline)
   edgeDragState: EdgeDragState | null;
   setEdgeDragState: (state: EdgeDragState | null) => void;
+
+  // Unsaved edit in EdgeEditor (right panel). Non-null while user has
+  // uncommitted changes; top-row SaveButton invokes commit before syncing.
+  pendingEdgeEdit: PendingEdgeEdit | null;
+  setPendingEdgeEdit: (edit: PendingEdgeEdit | null) => void;
 
   // Edge creation state
   edgeCreation: EdgeCreationState;
@@ -283,6 +296,10 @@ export const useAppStore = create<AppState>((set) => ({
   // Edge drag state
   edgeDragState: null,
   setEdgeDragState: (state) => set({ edgeDragState: state }),
+
+  // Pending edit in EdgeEditor
+  pendingEdgeEdit: null,
+  setPendingEdgeEdit: (edit) => set({ pendingEdgeEdit: edit }),
 
   // Edge creation state
   edgeCreation: {
@@ -566,6 +583,7 @@ export const useCurrentUser = () => useAppStore((state) => state.currentUser);
 export const useSourceNodes = () => useAppStore((state) => state.sourceNodes);
 export const useTargetNodes = () => useAppStore((state) => state.targetNodes);
 export const useEdgeDragState = () => useAppStore((state) => state.edgeDragState);
+export const usePendingEdgeEdit = () => useAppStore((state) => state.pendingEdgeEdit);
 export const useEdgeCreation = () => useAppStore((state) => state.edgeCreation);
 export const useAiSuggestionsByNode = () => useAppStore((state) => state.aiSuggestionsByNode);
 export const useAiSuggestionStatusByNode = () => useAppStore((state) => state.aiSuggestionStatusByNode);
