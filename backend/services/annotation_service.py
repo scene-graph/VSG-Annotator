@@ -660,14 +660,19 @@ class AnnotationService:
             else:
                 edge.target_category = category_map.get(edge.target, edge.target_category)
 
-            # 5) Drop edges whose predicate is not valid for the new
-            #    edge_type. This catches fg_bg motion predicates leaking
-            #    into reclassified static edges (e.g. ``driving_on`` on a
-            #    static→static pair) and static spatial predicates leaking
-            #    into dynamic reclassifications. Until the auto-reextract
-            #    pipeline is wired, the safe action is removal.
+            # 5) If the predicate is not valid for the new edge_type, keep
+            #    the edge but flag it. A reextract worker (see
+            #    ReextractService) picks up transitioning edges and fills
+            #    in a schema-valid predicate + motion attrs. Dropping the
+            #    edge here would hide it from the flipped node's Related
+            #    Edges panel and prevent the reextract from running.
             if not predicate_valid_for_type(edge.predicate, new_type):
-                continue
+                note = (
+                    f"Predicate '{edge.predicate}' is not valid for "
+                    f"'{new_type}'; awaiting auto re-extraction"
+                )
+                if not edge.validation_reasoning_round2:
+                    edge.validation_reasoning_round2 = note
 
             reconciled.append(edge)
 

@@ -48,7 +48,7 @@ async def accept_edge(
         )
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=annotation.video_id)
 
     try:
         result = await service.accept_edge(annotation)
@@ -76,7 +76,7 @@ async def reject_edge(
         )
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=annotation.video_id)
 
     try:
         result = await service.reject_edge(annotation)
@@ -104,7 +104,7 @@ async def modify_edge(
         )
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=annotation.video_id)
 
     try:
         result = await service.modify_edge(annotation)
@@ -132,7 +132,7 @@ async def create_edge(
         )
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=annotation.video_id)
 
     try:
         result = await service.create_edge(annotation)
@@ -167,7 +167,7 @@ async def delete_edge(
         raise HTTPException(status_code=404, detail=f"User not found: {request.user_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=request.video_id)
 
     try:
         result = await service.delete_edge(
@@ -198,7 +198,7 @@ async def get_revision_history(
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=video_id)
 
     return await service.get_edge_history(video_id, edge_id)
 
@@ -227,7 +227,11 @@ async def modify_node(
         raise HTTPException(status_code=404, detail=f"User not found: {modification.user_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    # Pass the DB video_id explicitly — the VSG's metadata.video_id may
+    # differ from the canonical DB video_id, and revisions are stored
+    # against the DB one. Without this, the reclassification pass inside
+    # modify_node silently misses all node revisions.
+    service = AnnotationService(db, loader, video_id=modification.video_id)
 
     try:
         result = await service.modify_node(modification)
@@ -252,7 +256,7 @@ async def get_node_revision_history(
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=video_id)
 
     return await service.get_node_history(video_id, node_id)
 
