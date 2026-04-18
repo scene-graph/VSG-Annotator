@@ -122,13 +122,43 @@ class ExportService:
         return vsg
 
     def _reclassify_edges_by_nodes(self, vsg: dict) -> dict:
-        """Rebuild edge lists based on current node is_static values."""
+        """Rebuild edge lists based on current node is_static values.
+
+        Mirrors the on-read reconciliation in
+        ``AnnotationService._reclassify_edges_by_nodes`` so the exported
+        VSG reflects the same derived state the UI shows:
+
+        * Group ``fg_bg`` edges drop members whose type no longer fits
+          (empty side drops the edge).
+        * 1:1 ``fg_bg`` edges with both endpoints static/dynamic get
+          reclassified and collapsed to string source/target.
+        * Edges reclassified to ``static`` get their ``time_period`` reset
+          to the full video span.
+        * Edges whose predicate is not valid for the new edge_type are
+          dropped (e.g. a fg_bg ``driving_on`` edge flipped to static).
+        * ``source_category`` / ``target_category`` are refreshed from
+          live node categories.
+        """
+        from backend.core.predicate_vocab import predicate_valid_for_type
+
         static_nodes = vsg.get("static_scene_graph", {}).get("nodes", [])
         dynamic_nodes = vsg.get("dynamic_scene_graph", {}).get("nodes", [])
-        static_ids = {n.get("node_id") for n in static_nodes}
-        dynamic_ids = {n.get("node_id") for n in dynamic_nodes}
-        node_is_static = {node_id: True for node_id in static_ids}
-        node_is_static.update({node_id: False for node_id in dynamic_ids})
+        node_is_static: dict[str, bool] = {}
+        category_map: dict[str, str] = {}
+        for node in static_nodes:
+            nid = node.get("node_id")
+            if nid:
+                node_is_static[nid] = True
+                category_map[nid] = node.get("category", "unknown")
+        for node in dynamic_nodes:
+            nid = node.get("node_id")
+            if nid:
+                node_is_static[nid] = False
+                category_map[nid] = node.get("category", "unknown")
+
+        total_frames = int(vsg.get("metadata", {}).get("total_frames") or 0)
+        full_span_end = max(total_frames - 1, 0)
+        full_span = {"start_frame": 0, "end_frame": full_span_end}
 
         all_edges = (
             vsg.get("static_scene_graph", {}).get("edges", [])
@@ -136,15 +166,38 @@ class ExportService:
             + vsg.get("foreground_background_relations", {}).get("edges", [])
         )
 
-        static_edges = []
-        dynamic_edges = []
-        fg_bg_edges = []
+        static_edges: list[dict] = []
+        dynamic_edges: list[dict] = []
+        fg_bg_edges: list[dict] = []
 
         for edge in all_edges:
-            sources = edge.get("source")
-            targets = edge.get("target")
-            src_list = sources if isinstance(sources, list) else [sources]
-            tgt_list = targets if isinstance(targets, list) else [targets]
+            prev_type = edge.get("edge_type")
+
+            # 1) Group fg_bg member pruning (sources that became static,
+            #    targets that became dynamic). Singleton 1:1 fg_bg is
+            #    left to reclassification below.
+            is_group_fg_bg = (
+                prev_type == "fg_bg"
+                and isinstance(edge.get("source"), list)
+                and isinstance(edge.get("target"), list)
+                and (len(edge["source"]) > 1 or len(edge["target"]) > 1)
+            )
+            if is_group_fg_bg:
+                kept_sources = [s for s in edge["source"] if not node_is_static.get(s, False)]
+                kept_targets = [t for t in edge["target"] if node_is_static.get(t, False)]
+                if not kept_sources or not kept_targets:
+                    continue  # drop — no valid dynamic→static pairings
+                if kept_sources != edge["source"] or kept_targets != edge["target"]:
+                    edge["source"] = kept_sources
+                    edge["target"] = kept_targets
+                    if not edge.get("validation_reasoning_round2"):
+                        edge["validation_reasoning_round2"] = (
+                            "Group members dropped after node type change"
+                        )
+
+            # 2) Reclassify edge_type
+            src_list = edge["source"] if isinstance(edge.get("source"), list) else [edge.get("source")]
+            tgt_list = edge["target"] if isinstance(edge.get("target"), list) else [edge.get("target")]
             src_static = [node_is_static.get(s, False) for s in src_list]
             tgt_static = [node_is_static.get(t, False) for t in tgt_list]
 
@@ -152,31 +205,64 @@ class ExportService:
                 s_static = src_static[0]
                 t_static = tgt_static[0]
                 if s_static and t_static:
-                    edge["edge_type"] = "static"
-                    static_edges.append(edge)
+                    new_type = "static"
                 elif not s_static and not t_static:
-                    edge["edge_type"] = "dynamic"
-                    dynamic_edges.append(edge)
+                    new_type = "dynamic"
                 else:
-                    edge["edge_type"] = "fg_bg"
-                    fg_bg_edges.append(edge)
+                    new_type = "fg_bg"
+            else:
+                if all(not s for s in src_static) and all(t for t in tgt_static):
+                    new_type = "fg_bg"
+                else:
+                    new_type = prev_type
+                    if not edge.get("validation_reasoning_round2"):
+                        edge["validation_reasoning_round2"] = (
+                            "Edge type mismatch after node type change"
+                        )
+
+            edge["edge_type"] = new_type
+
+            # 2b) fg_bg → 1:1 static/dynamic: collapse singleton lists
+            if new_type in ("static", "dynamic") and new_type != prev_type:
+                if isinstance(edge.get("source"), list) and len(edge["source"]) == 1:
+                    edge["source"] = edge["source"][0]
+                if isinstance(edge.get("target"), list) and len(edge["target"]) == 1:
+                    edge["target"] = edge["target"][0]
+
+            # 3) Full-span reset on transition into static
+            if new_type == "static" and prev_type != "static":
+                edge["time_period"] = dict(full_span)
+                edge["time_periods"] = [dict(full_span)]
+
+            # 4) Refresh source_category / target_category from live node
+            #    categories so a node-category revision propagates.
+            if isinstance(edge.get("source"), list):
+                edge["source_category"] = [
+                    category_map.get(s, "unknown") for s in edge["source"]
+                ]
+            else:
+                edge["source_category"] = category_map.get(
+                    edge.get("source"), edge.get("source_category", "unknown")
+                )
+            if isinstance(edge.get("target"), list):
+                edge["target_category"] = [
+                    category_map.get(t, "unknown") for t in edge["target"]
+                ]
+            else:
+                edge["target_category"] = category_map.get(
+                    edge.get("target"), edge.get("target_category", "unknown")
+                )
+
+            # 5) Drop edges whose predicate is not valid for the new type.
+            if not predicate_valid_for_type(edge.get("predicate", ""), new_type):
                 continue
 
-            # Multi-node edges: keep fg_bg if it still fits, else keep existing type and flag
-            if all(not s for s in src_static) and all(t for t in tgt_static):
-                edge["edge_type"] = "fg_bg"
-                fg_bg_edges.append(edge)
+            if new_type == "static":
+                static_edges.append(edge)
+            elif new_type == "dynamic":
+                dynamic_edges.append(edge)
             else:
-                if not edge.get("validation_reasoning_round2"):
-                    edge["validation_reasoning_round2"] = "Edge type mismatch after node type change"
-                # Keep in its current list by edge_type
-                edge_type = edge.get("edge_type")
-                if edge_type == "static":
-                    static_edges.append(edge)
-                elif edge_type == "dynamic":
-                    dynamic_edges.append(edge)
-                else:
-                    fg_bg_edges.append(edge)
+                fg_bg_edges.append(edge)
 
         vsg["static_scene_graph"]["edges"] = static_edges
         vsg["dynamic_scene_graph"]["edges"] = dynamic_edges

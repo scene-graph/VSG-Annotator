@@ -436,18 +436,30 @@ class AnnotationService:
             static and targets whose type flipped to dynamic (those members
             no longer satisfy the fg_bg contract of dynamic→static). If a
             side is emptied, the edge is dropped entirely.
+          * Refresh each edge's ``source_category`` / ``target_category``
+            from the live node map so that a node-category revision
+            propagates to its related edges.
+          * After reclassification, drop edges whose stored predicate does
+            not belong to the new edge_type's canonical vocabulary (e.g. a
+            fg_bg ``driving_on`` edge that reclassifies to ``static`` has
+            no valid static-edge predicate and is dropped).
         """
         from backend.models.schemas import TimePeriod
+        from backend.core.predicate_vocab import predicate_valid_for_type
 
         # Build node_id -> is_static map with revisions applied
         all_nodes = list(self.vsg_loader.get_all_nodes().values())
         node_map = {n.node_id: n.is_static for n in all_nodes}
+        category_map = {n.node_id: n.category for n in all_nodes}
 
-        # Apply latest node revisions to node_map
+        # Apply latest node revisions to the type + category maps
         for node in all_nodes:
             latest_rev = await self.tracker.get_latest_node_revision(self._video_id, node.node_id)
-            if latest_rev and latest_rev.new_is_static is not None:
-                node_map[node.node_id] = latest_rev.new_is_static
+            if latest_rev:
+                if latest_rev.new_is_static is not None:
+                    node_map[node.node_id] = latest_rev.new_is_static
+                if latest_rev.new_category is not None:
+                    category_map[node.node_id] = latest_rev.new_category
 
         total_frames = self.vsg_loader.total_frames
         # Guard against zero-frame or unknown metadata
@@ -537,6 +549,31 @@ class AnnotationService:
             if new_type == "static" and prev_type != "static":
                 edge.time_period = full_span
                 edge.time_periods = [full_span]
+
+            # 4) Refresh source_category / target_category from the live
+            #    node map. A node-category revision would otherwise leave
+            #    stale strings on every edge that references it.
+            if isinstance(edge.source, list):
+                edge.source_category = [
+                    category_map.get(s, "unknown") for s in edge.source
+                ]
+            else:
+                edge.source_category = category_map.get(edge.source, edge.source_category)
+            if isinstance(edge.target, list):
+                edge.target_category = [
+                    category_map.get(t, "unknown") for t in edge.target
+                ]
+            else:
+                edge.target_category = category_map.get(edge.target, edge.target_category)
+
+            # 5) Drop edges whose predicate is not valid for the new
+            #    edge_type. This catches fg_bg motion predicates leaking
+            #    into reclassified static edges (e.g. ``driving_on`` on a
+            #    static→static pair) and static spatial predicates leaking
+            #    into dynamic reclassifications. Until the auto-reextract
+            #    pipeline is wired, the safe action is removal.
+            if not predicate_valid_for_type(edge.predicate, new_type):
+                continue
 
             reconciled.append(edge)
 
