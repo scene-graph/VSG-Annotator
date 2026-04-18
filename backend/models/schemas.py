@@ -173,6 +173,13 @@ class EdgeResponse(BaseModel):
     has_revision: bool = False
     revision_action: Optional[str] = None
 
+    # Membership removed by group-edge cleanup after a node static/dynamic
+    # flip. Empty unless the reclassification pass dropped members — lets
+    # the UI keep those edges visible under the flipped node's "Related
+    # Edges" section with a "removed after type flip" marker.
+    pruned_sources: list[str] = Field(default_factory=list)
+    pruned_targets: list[str] = Field(default_factory=list)
+
 
 # ============================================================================
 # Edge Filtering

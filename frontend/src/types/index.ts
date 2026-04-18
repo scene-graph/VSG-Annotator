@@ -73,6 +73,12 @@ export interface Edge {
   attributes?: MotionAttributes;
   has_revision?: boolean;
   revision_action?: string;
+  // Members that the group-edge cleanup removed after a node type flip.
+  // Non-empty only when the backend pruned sources/targets during
+  // reclassification. The UI keeps those edges visible in the flipped
+  // node's Related Edges list with a removal marker.
+  pruned_sources?: string[];
+  pruned_targets?: string[];
 }
 
 // Video types

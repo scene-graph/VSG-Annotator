@@ -78,16 +78,31 @@ export function NodeReview({ videoId }: NodeReviewProps) {
   const [isEditing, setIsEditing] = useState(true);
   const modifyMutation = useModifyNode();
 
-  // Find related edges where this node is source OR target
+  // Find related edges where this node is source OR target. Also include
+  // edges where the node was pruned from membership by the group cleanup
+  // after a static/dynamic flip — those aren't "current" members but the
+  // user still wants to see them for traceability.
   const relatedEdges = useMemo(() => {
     if (!selectedNode) return [];
 
     return edges.filter((edge) => {
       const sources = Array.isArray(edge.source) ? edge.source : [edge.source];
       const targets = Array.isArray(edge.target) ? edge.target : [edge.target];
-      return sources.includes(selectedNode.node_id) || targets.includes(selectedNode.node_id);
+      if (sources.includes(selectedNode.node_id) || targets.includes(selectedNode.node_id)) {
+        return true;
+      }
+      const prunedSrc = edge.pruned_sources ?? [];
+      const prunedTgt = edge.pruned_targets ?? [];
+      return prunedSrc.includes(selectedNode.node_id) || prunedTgt.includes(selectedNode.node_id);
     });
   }, [selectedNode, edges]);
+
+  const isNodePrunedFromEdge = (edge: Edge): boolean => {
+    if (!selectedNode) return false;
+    const prunedSrc = edge.pruned_sources ?? [];
+    const prunedTgt = edge.pruned_targets ?? [];
+    return prunedSrc.includes(selectedNode.node_id) || prunedTgt.includes(selectedNode.node_id);
+  };
 
   const [lastAutoJumpNodeId, setLastAutoJumpNodeId] = useState<string | null>(null);
 
@@ -363,7 +378,8 @@ export function NodeReview({ videoId }: NodeReviewProps) {
           ) : (
             <div className="space-y-2 max-h-48 overflow-y-auto">
               {relatedEdges.map((edge) => {
-                const role = getNodeRole(edge);
+                const pruned = isNodePrunedFromEdge(edge);
+                const role = pruned ? 'source' : getNodeRole(edge);
                 const edgeTypeColor = edge.edge_type === 'static' ? 'bg-gray-500' :
                                       edge.edge_type === 'dynamic' ? 'bg-orange-500' : 'bg-purple-500';
                 const roleColor = role === 'source' ? '#00d4ff' :
@@ -387,15 +403,25 @@ export function NodeReview({ videoId }: NodeReviewProps) {
                       <span className={clsx('px-1.5 py-0.5 rounded text-white text-xs', edgeTypeColor)}>
                         {edge.edge_type}
                       </span>
-                      <span
-                        className="px-1.5 py-0.5 rounded text-xs font-semibold"
-                        style={{
-                          backgroundColor: `${roleColor}20`,
-                          color: roleColor,
-                        }}
-                      >
-                        {role === 'both' ? 'BOTH' : role.toUpperCase()}
-                      </span>
+                      {!pruned && (
+                        <span
+                          className="px-1.5 py-0.5 rounded text-xs font-semibold"
+                          style={{
+                            backgroundColor: `${roleColor}20`,
+                            color: roleColor,
+                          }}
+                        >
+                          {role === 'both' ? 'BOTH' : role.toUpperCase()}
+                        </span>
+                      )}
+                      {pruned && (
+                        <span
+                          className="px-1.5 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-300"
+                          title="This node was removed from the edge's member list after flipping to the other type; the edge itself still exists with the remaining members."
+                        >
+                          removed after type flip
+                        </span>
+                      )}
                       {jobByEdgeId.has(edge.edge_id) && (
                         <ReextractStateTag status={jobByEdgeId.get(edge.edge_id)!} />
                       )}

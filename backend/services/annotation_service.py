@@ -551,6 +551,12 @@ class AnnotationService:
                     tgt_cats = edge.target_category if isinstance(edge.target_category, list) else [edge.target_category]
                     source_cat_map = dict(zip(edge.source, src_cats))
                     target_cat_map = dict(zip(edge.target, tgt_cats))
+                    # Record pruned members so the UI can surface them
+                    # under the flipped node's "Related Edges" list with
+                    # a "removed after type flip" marker rather than
+                    # silently dropping them from view.
+                    edge.pruned_sources = [s for s in edge.source if s not in kept_sources]
+                    edge.pruned_targets = [t for t in edge.target if t not in kept_targets]
                     edge.source = kept_sources
                     edge.target = kept_targets
                     edge.source_category = [source_cat_map.get(s, "unknown") for s in kept_sources]
