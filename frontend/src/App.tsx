@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAppStore, useFilters, useCurrentUser, useSelectedNode, useSelectedEdge, useAnnotationMode, useBulkAiProgress, useAiProvider, useSetAiProvider, useResetBulkAi, useHydrateAiSuggestions, useClearAiSuggestions } from './store';
 import { usersApi, videosApi } from './services/api';
 import { masksApi } from './services/segmentationApi';
-import { useVideos, useVideo, useNodes, useEdges } from './hooks';
+import { useVideos, useVideo, useNodes, useEdges, useReextractJobs } from './hooks';
 import { VideoPlayer } from './components/VideoPlayer';
 import { TrackletTimeline } from './components/TrackletTimeline';
 import { EdgeTimeline } from './components/EdgeTimeline';
@@ -381,6 +381,10 @@ function VideoAnnotation() {
   const [videoStatus, setVideoStatus] = useState<string>('pending');
   const { data: nodesData } = useNodes(videoId);
   const { data: edgesData } = useEdges(videoId, filters);
+  // Mount the reextract-jobs poller here so it runs for every video the
+  // user opens. The hook self-gates refetch-interval and invalidates
+  // `edges` queries as jobs complete.
+  useReextractJobs(videoId);
 
   // Update store when data changes
   useEffect(() => {

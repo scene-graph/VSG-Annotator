@@ -136,6 +136,35 @@ export const edgesApi = {
   },
 };
 
+// Reextract API — Gemini-driven predicate/motion re-extraction jobs.
+export interface ReextractJob {
+  id: number;
+  edge_id: string;
+  prev_edge_type: string;
+  new_edge_type: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  result_predicate?: string | null;
+  result_attributes?: { velocity: string; direction: string; trajectory: string } | null;
+  result_time_periods?: Array<{ start_frame: number; end_frame: number }> | null;
+  error?: string | null;
+  applied_revision_id?: number | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export const reextractApi = {
+  listJobs: (videoId: string, edgeId?: string): Promise<ReextractJob[]> => {
+    const q = edgeId ? `?edge_id=${encodeURIComponent(edgeId)}` : '';
+    return fetchJson(`${API_BASE}/videos/${videoId}/reextract/jobs${q}`);
+  },
+  triggerEdge: (videoId: string, edgeId: string): Promise<{ enqueued_job_ids: number[] }> => {
+    return fetchJson(`${API_BASE}/videos/${videoId}/reextract/edge/${edgeId}`, {
+      method: 'POST',
+    });
+  },
+};
+
 // Annotations API
 export const annotationsApi = {
   accept: (annotation: AnnotationAccept): Promise<{ success: boolean; revision_id: number }> => {

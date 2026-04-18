@@ -1,5 +1,7 @@
+import { useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient, useIsMutating } from '@tanstack/react-query';
-import { videosApi, edgesApi, annotationsApi, importApi } from '../services/api';
+import { videosApi, edgesApi, annotationsApi, importApi, reextractApi } from '../services/api';
+import type { ReextractJob } from '../services/api';
 import type {
   AnnotationAccept,
   AnnotationReject,
@@ -346,4 +348,61 @@ export function useSyncData(videoId: string) {
   };
 
   return { sync, isMutating: isMutating > 0 };
+}
+
+/**
+ * Poll Gemini reextraction jobs for this video.
+ *
+ * When any job is still pending/running, refetch every 2s; once all jobs
+ * are terminal the query idles. Each time a job transitions from
+ * pending/running → done, we invalidate the edges query so the UI picks
+ * up the new predicate/attributes the worker wrote as an edge revision.
+ */
+export function useReextractJobs(videoId: string | undefined) {
+  const queryClient = useQueryClient();
+  const prevRunningIdsRef = useRef<Set<number>>(new Set());
+
+  const query = useQuery({
+    queryKey: ['reextractJobs', videoId],
+    queryFn: () => reextractApi.listJobs(videoId!),
+    enabled: !!videoId,
+    refetchInterval: (query) => {
+      const data = (query.state.data as ReextractJob[] | undefined) ?? [];
+      const hasActive = data.some((j) => j.status === 'pending' || j.status === 'running');
+      return hasActive ? 2000 : false;
+    },
+  });
+
+  useEffect(() => {
+    if (!videoId || !query.data) return;
+    const currentRunningIds = new Set<number>(
+      query.data.filter((j) => j.status === 'pending' || j.status === 'running').map((j) => j.id)
+    );
+    // Jobs that were running last tick but aren't now — they completed
+    // (done or failed) since the last poll. Invalidate edges so modify
+    // revisions produced by the worker flow into the UI.
+    const completed: number[] = [];
+    for (const prevId of prevRunningIdsRef.current) {
+      if (!currentRunningIds.has(prevId)) completed.push(prevId);
+    }
+    if (completed.length > 0) {
+      queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === 'edges' && q.queryKey[1] === videoId,
+      });
+    }
+    prevRunningIdsRef.current = currentRunningIds;
+  }, [videoId, query.data, queryClient]);
+
+  return query;
+}
+
+export function useTriggerReextract() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ videoId, edgeId }: { videoId: string; edgeId: string }) =>
+      reextractApi.triggerEdge(videoId, edgeId),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['reextractJobs', variables.videoId] });
+    },
+  });
 }

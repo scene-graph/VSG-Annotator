@@ -163,6 +163,43 @@ class MetadataRevision(Base):
         return f"<MetadataRevision(id={self.id}, metadata_type='{self.metadata_type}')>"
 
 
+class ReextractJob(Base):
+    """Background job tracking for Gemini-driven edge re-extraction.
+
+    Queued whenever an edge's type transitions due to a node static/dynamic
+    flip; a worker picks up pending rows, clips the covisible frame span
+    to a short mp4, calls Gemini Flash with a predicate-vocab-constrained
+    prompt, and records the result + a derived edge modify revision.
+
+    Status flow: pending → running → done | failed. Dedup on
+    (video_id, edge_id, status in {pending, running}) to avoid double
+    work when a user flips related nodes in rapid succession.
+    """
+
+    __tablename__ = "reextract_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    video_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("videos.id"), nullable=False
+    )
+    edge_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    prev_edge_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    new_edge_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    # Populated once Gemini returns a valid payload.
+    result_predicate: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    result_attributes: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    result_time_periods: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Link to the edge_revisions row the worker created on success.
+    applied_revision_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class NodeRevision(Base):
     """Node revision model for tracking human edits to node attributes."""
 
@@ -225,6 +262,8 @@ async def init_db() -> None:
             await conn.execute(text("ALTER TABLE edge_revisions ADD COLUMN original_time_periods JSON"))
         if "new_time_periods" not in existing_cols:
             await conn.execute(text("ALTER TABLE edge_revisions ADD COLUMN new_time_periods JSON"))
+        # reextract_jobs is created by create_all if missing; no destructive
+        # migrations needed for an initially-empty table.
 
 
 async def get_db():

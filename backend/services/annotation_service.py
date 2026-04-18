@@ -281,10 +281,47 @@ class AnnotationService:
             if latest_rev.new_category is not None:
                 original_category = latest_rev.new_category
 
+        # Snapshot pre-flip effective edge_type per edge so we can detect
+        # transitions caused by this node flip and enqueue reextraction.
+        pre_flip_types: dict[str, str] = {}
+        flip_changed_type = (
+            modification.new_is_static is not None
+            and modification.new_is_static != original_is_static
+        )
+        if flip_changed_type:
+            pre_edges = await self.get_edges_with_revisions()
+            pre_flip_types = {e.edge_id: e.edge_type for e in pre_edges}
+
         # Record the modification
         revision = await self.tracker.record_node_modify(
             modification, original_attributes, original_is_static, original_category
         )
+
+        # After the revision is recorded, recompute effective edges to see
+        # which ones transitioned. Enqueue Gemini reextract jobs for each
+        # transitioning edge so the predicate + motion attrs match the new
+        # edge_type's schema vocabulary.
+        enqueued: list[int] = []
+        if flip_changed_type:
+            post_edges = await self.get_edges_with_revisions()
+            transitions: list[tuple[str, str, str]] = []
+            for e in post_edges:
+                prev_type = pre_flip_types.get(e.edge_id)
+                if prev_type and prev_type != e.edge_type:
+                    transitions.append((e.edge_id, prev_type, e.edge_type))
+
+            if transitions:
+                from backend.models.database import Video
+                from backend.services.reextract_service import ReextractService
+
+                vid_row = await self.session.execute(
+                    select(Video).where(Video.video_id == modification.video_id)
+                )
+                vid = vid_row.scalar_one_or_none()
+                if vid is not None:
+                    reextract = ReextractService(self.session, vid.id, modification.video_id)
+                    enqueued = await reextract.enqueue_transitions(transitions)
+                    ReextractService.spawn_background(enqueued)
 
         return {
             "success": True,
@@ -305,6 +342,7 @@ class AnnotationService:
                 "is_static": modification.new_is_static,
                 "category": modification.new_category,
             },
+            "reextract_job_ids": enqueued,
         }
 
     async def get_node_history(

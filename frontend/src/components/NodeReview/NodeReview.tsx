@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect } from 'react';
 import type { Node, Edge, NodeVisualAttributes, NodePhysicalAttributes } from '../../types';
 import { useAppStore, useSelectedNode, useEdges, useCurrentUser, useNodes, useAiSuggestionFrameByNode, useAiSuggestionStatusByNode } from '../../store';
-import { useModifyNode } from '../../hooks/useVideo';
+import { useModifyNode, useReextractJobs } from '../../hooks/useVideo';
 import { NodeEditor } from './NodeEditor';
 import { getEdgeStartFrame } from '../../utils/edgeFrame';
 import clsx from 'clsx';
@@ -31,8 +31,39 @@ const COLORS = {
   selected: '#22c55e', // Green for selected
 };
 
+// Visual state for a reextract job shown in the related-edges list.
+function ReextractStateTag({ status }: { status: 'pending' | 'running' | 'done' | 'failed' }) {
+  if (status === 'pending' || status === 'running') {
+    return (
+      <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-200">
+        <svg className="animate-spin h-2.5 w-2.5" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        re-extracting
+      </span>
+    );
+  }
+  if (status === 'done') {
+    return (
+      <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-300">re-extracted</span>
+    );
+  }
+  return (
+    <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300">re-extract failed</span>
+  );
+}
+
 export function NodeReview({ videoId }: NodeReviewProps) {
   const selectedNode = useSelectedNode();
+  const { data: allJobs } = useReextractJobs(videoId);
+  const jobByEdgeId = useMemo(() => {
+    const map = new Map<string, 'pending' | 'running' | 'done' | 'failed'>();
+    for (const j of allJobs ?? []) {
+      if (!map.has(j.edge_id)) map.set(j.edge_id, j.status);
+    }
+    return map;
+  }, [allJobs]);
   const setSelectedNode = useAppStore((state) => state.setSelectedNode);
   const setSelectedEdge = useAppStore((state) => state.setSelectedEdge);
   const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
@@ -352,7 +383,7 @@ export function NodeReview({ videoId }: NodeReviewProps) {
                     onClick={() => handleEdgeClick(edge)}
                     className="p-2 bg-gray-600 rounded cursor-pointer hover:bg-gray-500 transition-colors"
                   >
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className={clsx('px-1.5 py-0.5 rounded text-white text-xs', edgeTypeColor)}>
                         {edge.edge_type}
                       </span>
@@ -365,6 +396,9 @@ export function NodeReview({ videoId }: NodeReviewProps) {
                       >
                         {role === 'both' ? 'BOTH' : role.toUpperCase()}
                       </span>
+                      {jobByEdgeId.has(edge.edge_id) && (
+                        <ReextractStateTag status={jobByEdgeId.get(edge.edge_id)!} />
+                      )}
                     </div>
                     <div className="text-sm text-gray-200 flex items-center gap-1 flex-wrap">
                       <span style={{ color: '#00d4ff' }}>{sourceCategories.join(', ')}</span>

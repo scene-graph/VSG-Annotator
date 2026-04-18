@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Edge, MotionAttributes, TimePeriod } from '../../types';
 import { useAppStore, useCurrentUser, useSelectedEdge, useNodes, useEdgeCreation } from '../../store';
 import { getLargestBBoxFrame } from '../../utils/edgeFrame';
-import { useAcceptEdge, useDeleteEdge, useEdgeHistory } from '../../hooks';
+import { useAcceptEdge, useDeleteEdge, useEdgeHistory, useReextractJobs, useTriggerReextract } from '../../hooks';
 import { EdgeEditor } from './EdgeEditor';
 import { EdgeCreator } from './EdgeCreator';
 import { ValidationReasoning } from './ValidationReasoning';
@@ -11,6 +11,63 @@ import clsx from 'clsx';
 
 interface EdgeReviewProps {
   videoId: string;
+}
+
+interface ReextractStatusPillProps {
+  status: 'pending' | 'running' | 'done' | 'failed';
+  prevType: string;
+  newType: string;
+  error?: string | null;
+  onRetry: () => void;
+}
+
+// Pill showing the state of the latest Gemini reextraction job for the
+// selected edge. "pending"/"running" indicate the backend is still
+// working; "done"/"failed" reflect the terminal state of the latest job.
+function ReextractStatusPill({ status, prevType, newType, error, onRetry }: ReextractStatusPillProps) {
+  const typeFlow = prevType === newType ? '' : ` (${prevType}→${newType})`;
+  if (status === 'pending' || status === 'running') {
+    return (
+      <span
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-200"
+        title={`Gemini is re-extracting this edge${typeFlow}`}
+      >
+        <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        {status === 'pending' ? 'queued' : 're-extracting'}
+      </span>
+    );
+  }
+  if (status === 'done') {
+    return (
+      <span
+        className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-300"
+        title={`Re-extracted after node type flip${typeFlow}`}
+      >
+        re-extracted
+      </span>
+    );
+  }
+  // failed
+  return (
+    <span
+      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300"
+      title={error || 'Gemini re-extraction failed'}
+    >
+      re-extract failed
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onRetry();
+        }}
+        className="underline hover:text-red-200"
+      >
+        retry
+      </button>
+    </span>
+  );
 }
 
 export function EdgeReview({ videoId }: EdgeReviewProps) {
@@ -224,6 +281,16 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     fg_bg: 'bg-purple-500',
   };
 
+  // Latest reextract job for this edge (for a "re-extracting…" / "done" /
+  // "failed" pill in the header). The poller in App.tsx keeps this
+  // query fresh while jobs are active; no second poll needed here.
+  const { data: allJobs } = useReextractJobs(videoId);
+  const triggerReextract = useTriggerReextract();
+  const latestJob = useMemo(() => {
+    if (!allJobs || !selectedEdge) return undefined;
+    return allJobs.find((j) => j.edge_id === selectedEdge.edge_id);
+  }, [allJobs, selectedEdge?.edge_id]);
+
   return (
     <div className="bg-gray-800 rounded-lg p-4 h-full overflow-y-auto">
       {/* Header */}
@@ -233,6 +300,15 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
             {selectedEdge.edge_type}
           </span>
           <span className="text-white font-mono text-sm">{selectedEdge.edge_id}</span>
+          {latestJob && (
+            <ReextractStatusPill
+              status={latestJob.status}
+              prevType={latestJob.prev_edge_type}
+              newType={latestJob.new_edge_type}
+              error={latestJob.error}
+              onRetry={() => triggerReextract.mutate({ videoId, edgeId: selectedEdge.edge_id })}
+            />
+          )}
         </div>
         <button
           onClick={() => setSelectedEdge(null)}
