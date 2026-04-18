@@ -234,8 +234,16 @@ class VSGLoader:
         )
 
     def _parse_time_periods(self, edge_data: dict) -> list[TimePeriod]:
-        """Parse time periods list from edge data."""
+        """Parse time periods list from edge data.
+
+        Accepts either `time_periods` (current schema key) or `time_spans`
+        (legacy / alternative key produced by some extractors). Without
+        this fallback, multi-interval edges collapsed to the merged
+        `time_period` envelope and the UI hid the real gaps.
+        """
         tp_list = edge_data.get("time_periods")
+        if not (isinstance(tp_list, list) and tp_list):
+            tp_list = edge_data.get("time_spans")
         if isinstance(tp_list, list) and tp_list:
             return [
                 self._parse_time_period(tp)
