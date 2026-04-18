@@ -101,6 +101,17 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     selectedEdge?.edge_id
   );
 
+  // Latest reextract job for this edge (for the header pill). These hooks
+  // must sit above the early returns below — otherwise the hook count
+  // changes between "no edge selected" and "edge selected" renders and
+  // React throws "Rendered more hooks than during the previous render".
+  const { data: allJobs } = useReextractJobs(videoId);
+  const triggerReextract = useTriggerReextract();
+  const latestJob = useMemo(() => {
+    if (!allJobs || !selectedEdge) return undefined;
+    return allJobs.find((j) => j.edge_id === selectedEdge.edge_id);
+  }, [allJobs, selectedEdge?.edge_id]);
+
   // Reset panel UI state whenever a new edge is selected.
   useEffect(() => {
     if (selectedEdge) {
@@ -280,16 +291,6 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     dynamic: 'bg-orange-500',
     fg_bg: 'bg-purple-500',
   };
-
-  // Latest reextract job for this edge (for a "re-extracting…" / "done" /
-  // "failed" pill in the header). The poller in App.tsx keeps this
-  // query fresh while jobs are active; no second poll needed here.
-  const { data: allJobs } = useReextractJobs(videoId);
-  const triggerReextract = useTriggerReextract();
-  const latestJob = useMemo(() => {
-    if (!allJobs || !selectedEdge) return undefined;
-    return allJobs.find((j) => j.edge_id === selectedEdge.edge_id);
-  }, [allJobs, selectedEdge?.edge_id]);
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 h-full overflow-y-auto">
