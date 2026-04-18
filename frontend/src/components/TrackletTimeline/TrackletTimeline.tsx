@@ -108,7 +108,14 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
     return () => resizeObserver.disconnect();
   }, []);
 
-  // Keep a stable node order based on initial category + start-frame sort
+  // Keep a stable node order based on initial category + start-frame sort.
+  // When an edge is selected, temporarily float all related nodes (sources
+  // first, then targets) to the top so users can scan and drag the relevant
+  // tracklets without scrolling. For fg-bg edges source/target can each
+  // cover a group of nodes — the store already flattens both sides into
+  // sourceNodes/targetNodes arrays, so we just partition on those sets.
+  // Deselecting the edge restores the stable order because nodeOrderRef is
+  // untouched.
   const sortedNodes = useMemo(() => {
     const baseNodes = [...nodes]
       .map((node) => ({
@@ -136,12 +143,35 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
       });
     }
 
-    return baseNodes.sort((a, b) => {
+    const byOrder = (
+      a: (typeof baseNodes)[number],
+      b: (typeof baseNodes)[number]
+    ) => {
       const aOrder = orderMap.get(a.node.node_id) ?? 0;
       const bOrder = orderMap.get(b.node.node_id) ?? 0;
       return aOrder - bOrder;
-    });
-  }, [nodes]);
+    };
+
+    if (!selectedEdge) {
+      return baseNodes.sort(byOrder);
+    }
+
+    const sourceSet = new Set(sourceNodes);
+    const targetSet = new Set(targetNodes);
+    const sources: typeof baseNodes = [];
+    const targets: typeof baseNodes = [];
+    const rest: typeof baseNodes = [];
+    for (const item of baseNodes) {
+      const id = item.node.node_id;
+      if (sourceSet.has(id)) sources.push(item);
+      else if (targetSet.has(id)) targets.push(item);
+      else rest.push(item);
+    }
+    sources.sort(byOrder);
+    targets.sort(byOrder);
+    rest.sort(byOrder);
+    return [...sources, ...targets, ...rest];
+  }, [nodes, selectedEdge, sourceNodes, targetNodes]);
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current) return;
