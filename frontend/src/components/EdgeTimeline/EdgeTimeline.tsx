@@ -617,8 +617,14 @@ export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
         </div>
       </div>
 
-      {/* Timeline */}
-      <div ref={containerRef} className="overflow-auto flex-1" style={{ maxHeight: containerHeight }}>
+      {/* Timeline — scrollbarGutter: stable keeps this inner width
+          identical to TrackletTimeline's regardless of whether either
+          list overflows, so the two x-scales align. */}
+      <div
+        ref={containerRef}
+        className="overflow-auto flex-1"
+        style={{ maxHeight: containerHeight, scrollbarGutter: 'stable' }}
+      >
         <svg ref={svgRef} width="100%" height={contentHeight} />
       </div>
     </div>

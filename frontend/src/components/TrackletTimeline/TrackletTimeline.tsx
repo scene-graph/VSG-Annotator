@@ -22,7 +22,11 @@ const COLORS = {
 
 const LANE_HEIGHT = 20;
 const LANE_PADDING = 4;
-const MARGIN = { top: 30, right: 20, bottom: 20, left: 132 };
+// left/right must match EdgeTimeline's MARGIN so the two timelines'
+// x-scales align pixel-for-pixel — lets users visually line up a
+// tracklet with the edges that reference it and drag edge spans against
+// the object's visible frames.
+const MARGIN = { top: 30, right: 20, bottom: 20, left: 150 };
 
 // Extract tracklet range from node's bboxes_by_frame
 function getTrackletRange(node: Node): { start: number; end: number } {
@@ -702,8 +706,14 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
         )}
       </div>
 
-      {/* Timeline */}
-      <div ref={containerRef} className="overflow-auto flex-1" style={{ maxHeight: containerHeight }}>
+      {/* Timeline — scrollbarGutter: stable reserves the vertical scrollbar
+          width even when content doesn't overflow, so this timeline's
+          inner width matches EdgeTimeline's regardless of lane count. */}
+      <div
+        ref={containerRef}
+        className="overflow-auto flex-1"
+        style={{ maxHeight: containerHeight, scrollbarGutter: 'stable' }}
+      >
         <svg ref={svgRef} width="100%" height={contentHeight} />
       </div>
     </div>
