@@ -485,10 +485,32 @@ class AnnotationService:
         from backend.models.schemas import TimePeriod
         from backend.core.predicate_vocab import predicate_valid_for_type
 
-        # Build node_id -> is_static map with revisions applied
+        # Build node_id -> is_static / category / bboxes maps. The bboxes
+        # map lets us compute covisible spans for edges that transition
+        # out of ``static`` (which hold the full video span) into fg_bg
+        # or dynamic (which should be scoped to where the nodes co-exist).
         all_nodes = list(self.vsg_loader.get_all_nodes().values())
         node_map = {n.node_id: n.is_static for n in all_nodes}
         category_map = {n.node_id: n.category for n in all_nodes}
+        bboxes_map: dict[str, dict] = {
+            n.node_id: (n.bboxes_by_frame or {}) for n in all_nodes
+        }
+
+        def _covisible_span(node_ids: list[str]) -> Optional[tuple[int, int]]:
+            """Intersection of visible frames across the given nodes."""
+            frame_sets: list[set[int]] = []
+            for nid in node_ids:
+                bbs = bboxes_map.get(nid) or {}
+                frames = {int(f) for f in bbs.keys()}
+                if not frames:
+                    return None
+                frame_sets.append(frames)
+            if not frame_sets:
+                return None
+            shared = set.intersection(*frame_sets)
+            if not shared:
+                return None
+            return min(shared), max(shared)
 
         # Apply latest node revisions to the type + category maps
         for node in all_nodes:
@@ -593,6 +615,34 @@ class AnnotationService:
             if new_type == "static" and prev_type != "static":
                 edge.time_period = full_span
                 edge.time_periods = [full_span]
+
+            # 3b) When an edge transitions OUT of ``static`` (into fg_bg
+            #     or dynamic), the stored span is almost certainly the
+            #     full-video [0, T-1] default that static edges carry. A
+            #     fg_bg / dynamic edge should instead be scoped to the
+            #     covisible lifespan of its participating nodes. Only
+            #     truncate on transition so user-annotated spans on edges
+            #     that were already fg_bg/dynamic are preserved.
+            if prev_type == "static" and new_type in ("fg_bg", "dynamic"):
+                participants = []
+                if isinstance(edge.source, list):
+                    participants.extend(edge.source)
+                else:
+                    participants.append(edge.source)
+                if isinstance(edge.target, list):
+                    participants.extend(edge.target)
+                else:
+                    participants.append(edge.target)
+                span = _covisible_span(participants)
+                if span is not None:
+                    start_f, end_f = span
+                    truncated = TimePeriod(start_frame=start_f, end_frame=end_f)
+                    edge.time_period = truncated
+                    edge.time_periods = [truncated]
+                    if not edge.validation_reasoning_round2:
+                        edge.validation_reasoning_round2 = (
+                            "Time period truncated to covisible span after type flip"
+                        )
 
             # 4) Refresh source_category / target_category from the live
             #    node map. A node-category revision would otherwise leave

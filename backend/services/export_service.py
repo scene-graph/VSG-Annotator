@@ -145,16 +145,42 @@ class ExportService:
         dynamic_nodes = vsg.get("dynamic_scene_graph", {}).get("nodes", [])
         node_is_static: dict[str, bool] = {}
         category_map: dict[str, str] = {}
+        bboxes_map: dict[str, dict] = {}
+        for node in static_nodes + dynamic_nodes:
+            nid = node.get("node_id")
+            if not nid:
+                continue
+            node_is_static[nid] = node.get("is_static", True) if node in static_nodes else False
+            category_map[nid] = node.get("category", "unknown")
+            tracking = node.get("tracking") or {}
+            bboxes_map[nid] = tracking.get("bboxes_by_frame") or node.get("bboxes_by_frame") or {}
+        # Re-seed is_static precisely: the list-based heuristic above is
+        # wrong when a node was authored in the other list but overridden
+        # via revision. Exporter already repositions nodes based on
+        # is_static before calling this, so just read the per-node flag.
         for node in static_nodes:
             nid = node.get("node_id")
             if nid:
                 node_is_static[nid] = True
-                category_map[nid] = node.get("category", "unknown")
         for node in dynamic_nodes:
             nid = node.get("node_id")
             if nid:
                 node_is_static[nid] = False
-                category_map[nid] = node.get("category", "unknown")
+
+        def _covisible_span(node_ids: list[str]):
+            frame_sets: list[set[int]] = []
+            for nid in node_ids:
+                bbs = bboxes_map.get(nid) or {}
+                frames = {int(f) for f in bbs.keys()}
+                if not frames:
+                    return None
+                frame_sets.append(frames)
+            if not frame_sets:
+                return None
+            shared = set.intersection(*frame_sets)
+            if not shared:
+                return None
+            return min(shared), max(shared)
 
         total_frames = int(vsg.get("metadata", {}).get("total_frames") or 0)
         full_span_end = max(total_frames - 1, 0)
@@ -233,6 +259,25 @@ class ExportService:
             if new_type == "static" and prev_type != "static":
                 edge["time_period"] = dict(full_span)
                 edge["time_periods"] = [dict(full_span)]
+
+            # 3b) Truncate on transition OUT of static (into fg_bg or
+            #     dynamic) to the covisible span of participating nodes.
+            if prev_type == "static" and new_type in ("fg_bg", "dynamic"):
+                participants: list[str] = []
+                if isinstance(edge.get("source"), list):
+                    participants.extend(edge["source"])
+                else:
+                    participants.append(edge.get("source"))
+                if isinstance(edge.get("target"), list):
+                    participants.extend(edge["target"])
+                else:
+                    participants.append(edge.get("target"))
+                span = _covisible_span([p for p in participants if p])
+                if span is not None:
+                    start_f, end_f = span
+                    truncated = {"start_frame": start_f, "end_frame": end_f}
+                    edge["time_period"] = dict(truncated)
+                    edge["time_periods"] = [dict(truncated)]
 
             # 4) Refresh source_category / target_category from live node
             #    categories so a node-category revision propagates.
