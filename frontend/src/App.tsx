@@ -31,15 +31,20 @@ function isBackendUnavailableError(error: unknown): boolean {
   );
 }
 
-/** Extract the dataset source prefix from a video_id (e.g. "kitti_0002" -> "kitti"). */
-function getVideoSource(videoId: string): string {
-  // Handle multi-word prefixes: epic_kitchen, sav2, mvpd, etc.
-  const prefixes = ['epic_kitchen', 'motchallenge', 'ego4d', 'kitti', 'waymo', 'vidor', 'vipseg', 'pvsg', 'sav2', 'mvpd', 'cityscapes'];
-  for (const p of prefixes) {
-    if (videoId.startsWith(p + '_') || videoId === p) return p;
-  }
-  // Fallback: first segment before underscore
-  return videoId.split('_')[0];
+/** Source-domain tag for grouping videos into self-contained collections.
+ *
+ * The backend stamps `Video.dataset` from the sample directory's
+ * `<source>__<id>` prefix at import time, so each source collection
+ * (Kitti_v2, Sav2_V4, vidor_v2, …) round-trips as a single tag value.
+ * The legacy fallback parses the video_id for older imports that pre-date
+ * the tag.
+ */
+function getVideoSource(video: { video_id: string; dataset?: string | null }): string {
+  if (video.dataset) return video.dataset;
+  const id = video.video_id;
+  const sep = id.indexOf('__');
+  if (sep > 0) return id.slice(0, sep);
+  return id.split('_')[0] || 'unknown';
 }
 
 function VideoList() {
@@ -68,7 +73,7 @@ function VideoList() {
     if (!videos) return [];
     const counts = new Map<string, number>();
     for (const v of videos) {
-      const src = getVideoSource(v.video_id);
+      const src = getVideoSource(v);
       counts.set(src, (counts.get(src) || 0) + 1);
     }
     return Array.from(counts.entries())
@@ -78,7 +83,7 @@ function VideoList() {
 
   const filteredVideos = useMemo(() => {
     if (!videos || sourceFilter === 'all') return videos || [];
-    return videos.filter(v => getVideoSource(v.video_id) === sourceFilter);
+    return videos.filter(v => getVideoSource(v) === sourceFilter);
   }, [videos, sourceFilter]);
 
   if (isLoading) {
@@ -176,7 +181,11 @@ function VideoList() {
           >
             <div className="text-white font-semibold mb-2">{video.video_id}</div>
             {video.dataset && (
-              <div className="text-gray-400 text-sm mb-2">Dataset: {video.dataset}</div>
+              <div className="mb-2">
+                <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-500/20 text-indigo-300">
+                  {video.dataset}
+                </span>
+              </div>
             )}
             <div className="flex items-center gap-4 text-sm">
               <div className="text-gray-400">
@@ -636,8 +645,8 @@ function VideoAnnotation() {
             onChange={(e) => setAiProvider(e.target.value as 'openai' | 'gemini')}
             className="bg-gray-700 text-white rounded px-2 py-1 text-sm border border-gray-600"
           >
-            <option value="gemini">Gemini 3 Flash</option>
             <option value="openai">GPT 5.4 Mini</option>
+            <option value="gemini">Gemini 3 Flash</option>
           </select>
           <button
             onClick={bulkAiProgress.running ? handleCancelBulk : handleBulkAISuggestions}

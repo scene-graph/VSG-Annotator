@@ -371,22 +371,44 @@ class VSGLoader:
 
 
 def find_latest_vsg(sample_dir: Path) -> Optional[Path]:
-    """Find the latest VSG file in a sample's outputs directory."""
-    outputs_dir = sample_dir / "outputs"
-    if not outputs_dir.exists():
-        return None
+    """Find the latest VSG file for a sample.
 
-    vsg_files = list(outputs_dir.glob("video_scene_graph_*.json"))
-    # Also match the exact name "video_scene_graph.json" (no timestamp suffix)
-    exact = outputs_dir / "video_scene_graph.json"
-    if exact.exists() and exact not in vsg_files:
-        vsg_files.append(exact)
+    Looks under <sample>/outputs/ first (legacy layout where
+    `video_scene_graph[_*].json` lives next to per-stage artifacts), then
+    falls back to <sample>/video_scene_graph.json at the top level
+    (NIPS layout, where `outputs/` instead holds per-VLM raw dumps).
+    """
+    vsg_files: list[Path] = []
+
+    outputs_dir = sample_dir / "outputs"
+    if outputs_dir.exists():
+        vsg_files.extend(outputs_dir.glob("video_scene_graph_*.json"))
+        exact = outputs_dir / "video_scene_graph.json"
+        if exact.exists() and exact not in vsg_files:
+            vsg_files.append(exact)
+
+    top_level = sample_dir / "video_scene_graph.json"
+    if top_level.exists() and top_level not in vsg_files:
+        vsg_files.append(top_level)
+
     if not vsg_files:
         return None
 
-    # Sort by modification time, return latest
     vsg_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return vsg_files[0]
+
+
+def source_tag_from_dirname(name: str) -> str:
+    """Derive a source-domain tag from a sample directory name.
+
+    Convention: dataset bundles name their sample dirs as
+    `<source>__<sample-id>` (e.g. `Kitti_v2__0000`,
+    `Sav2_V4__sav_003268`). The portion before `__` identifies the
+    collection the video belongs to. If no `__` separator is present,
+    fall back to the full directory name.
+    """
+    head, sep, _ = name.partition("__")
+    return head if sep else name
 
 
 def discover_samples(pvsg_mini_path: Path) -> list[dict[str, Any]]:
@@ -413,6 +435,7 @@ def discover_samples(pvsg_mini_path: Path) -> list[dict[str, Any]]:
             "frames_path": str(frames_dir),
             "masks_path": str(masks_dir) if masks_dir.exists() else None,
             "sample_dir": str(sample_dir),
+            "source_tag": source_tag_from_dirname(sample_dir.name),
         })
 
     return samples

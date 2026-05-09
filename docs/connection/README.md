@@ -52,13 +52,21 @@ ssh -L 8888:ccc0424:8888 -L 8889:ccc0424:8889 jtu9@cc-login.campuscluster.illino
 - Local ports 8888/8889 must be free on your machine. Free them with
   `lsof -iTCP:8888` / `lsof -iTCP:8889` before retrying.
 
-## ProxyJump alternative
+## ProxyJump alternative (does NOT work on ICC)
 
-If the direct `-L` via the login node still hangs, SSH into the compute
-node itself through the login node and forward from there:
+On some clusters you can SSH directly into the compute node and
+forward from there:
 
 ```bash
 ssh -J jtu9@cc-login.campuscluster.illinois.edu \
     -L 8888:localhost:8888 -L 8889:localhost:8889 \
     jtu9@ccc0424
 ```
+
+**This fails on the Illinois Campus Cluster** — compute-node sshd
+uses `pam_slurm_adopt` plus restricted auth methods, so external
+logins bounce with `Permission denied (hostbased)` even when you
+have a live SLURM job on the node. There is no workaround: you must
+use the plain `-L through cc-login` form above. You never need a
+shell on the compute node to reach the dev servers — the login-node
+forward is sufficient.

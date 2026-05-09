@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 # Resolve .env relative to this file's parent (project root)
@@ -36,11 +36,15 @@ class Settings(BaseSettings):
     default_page_size: int = 50
     max_page_size: int = 200
 
-    # Unified AI API key (bd.ctis.site proxy)
-    api_key: str = Field("", alias="API_KEY")
+    # Unified AI API key (bd.ctis.site proxy). Accepts either OPENAI_API_KEY
+    # (preferred, matches OpenAI convention) or the legacy API_KEY.
+    api_key: str = Field(
+        "",
+        validation_alias=AliasChoices("OPENAI_API_KEY", "API_KEY"),
+    )
 
     # Multi-provider AI Configuration
-    ai_default_provider: str = "gemini"
+    ai_default_provider: str = "openai"
 
     openai_api_url: str = "https://bd.ctis.site/v1/chat/completions"
     openai_model: str = "gpt-5.4-mini"

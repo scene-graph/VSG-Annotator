@@ -440,7 +440,7 @@ export const useAppStore = create<AppState>((set) => ({
   setIsRefining: (v) => set({ isRefining: v }),
 
   // AI suggestions
-  aiProvider: 'gemini',
+  aiProvider: 'openai',
   setAiProvider: (provider) => set({ aiProvider: provider }),
   aiSuggestionsByNode: {},
   aiSuggestionStatusByNode: {},
