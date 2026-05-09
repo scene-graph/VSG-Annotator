@@ -21,15 +21,15 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite+aiosqlite:///./sgg_visualization.db"
 
-    # Paths
-    pvsg_mini_path: Path = Path("/home/jtu9/sgg/VideoSGG_AnyGran/examples/pvsg_mini")
+    # Paths — set via PVSG_MINI_PATH in .env
+    pvsg_mini_path: Path = Path("./data")
 
     # API
     api_prefix: str = "/api"
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
-    # Frame Cache
-    frame_cache_path: Path = Path("/srv/local/shared/temp/tmp1/jtu9/cache/sgg_frames")
+    # Frame Cache — set via FRAME_CACHE_PATH in .env
+    frame_cache_path: Path = Path("./.frame_cache")
     frame_cache_enabled: bool = True
 
     # Pagination

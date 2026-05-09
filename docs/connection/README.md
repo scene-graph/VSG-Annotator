@@ -1,14 +1,13 @@
-# Connecting to the SGG Visualization dev servers
+# Connecting to the dev servers from a remote machine
 
-The backend (FastAPI/uvicorn) and frontend (Vite) run on a compute node
-inside the Illinois Campus Cluster and are not directly reachable from
-outside. Use an SSH port-forward through the cluster login node.
+The backend (FastAPI/uvicorn) and frontend (Vite) bind to `0.0.0.0` on
+ports `8888` and `8889` respectively. If they are running on a remote host
+that is not directly reachable from your laptop, use an SSH port-forward.
 
 ## Prerequisites
 
-- An active SLURM allocation on the compute node (required for sshd to
-  accept your login).
-- Both dev servers running on the compute node:
+- SSH access to the host running the dev servers.
+- Both dev servers running:
   - backend: `uvicorn backend.main:app --host 0.0.0.0 --port 8888 --reload`
   - frontend: `npx vite --port 8889 --host 0.0.0.0`
 
@@ -17,56 +16,49 @@ outside. Use an SSH port-forward through the cluster login node.
 From your local machine:
 
 ```bash
-ssh -L 8888:<compute_node>:8888 -L 8889:<compute_node>:8889 jtu9@cc-login.campuscluster.illinois.edu
+ssh -L 8888:<host>:8888 -L 8889:<host>:8889 <user>@<remote>
 ```
 
-Replace `<compute_node>` with the short hostname of the node your job is
-on (e.g. `ccc0424`). Check with `squeue -u jtu9` or `echo $SLURM_JOB_ID`
-while logged in.
+Replace:
+
+- `<host>` — hostname (or `localhost`) on the remote where the servers
+  are bound.
+- `<user>@<remote>` — your SSH login on the remote machine.
 
 Then open http://localhost:8889/ in your browser. The frontend talks to
 the backend over `localhost:8888`, also forwarded through the same SSH
 session.
 
-### Known-working example
+### Two-hop example (login node + compute node)
+
+If the dev servers run on a compute node behind a login node, the
+two-hop form is:
 
 ```bash
-ssh -L 8888:ccc0424:8888 -L 8889:ccc0424:8889 jtu9@cc-login.campuscluster.illinois.edu
+ssh -L 8888:<compute_node>:8888 -L 8889:<compute_node>:8889 <user>@<login_node>
 ```
+
+If the cluster's compute-node SSH refuses external logins (some
+schedulers attach `pam_slurm_adopt` or similar), use this plain
+local-forward form rather than `ssh -J … <compute>` — the login-node
+forward is sufficient because the login node can route to the compute
+node over the internal network.
 
 ## Gotchas
 
-- **Use the short hostname** (`ccc0424`), not the FQDN
-  (`ccc0424.campuscluster.illinois.edu`). The FQDN resolves to the
-  public interface (141.142.x.x) which the login node can't route to;
-  the short name resolves to the internal HSN interface (172.29.x.x)
-  which it can.
-- If the tunnel hangs, verify reachability from the login node first:
+- **Local ports 8888/8889 must be free** on your machine. Check with
+  `lsof -iTCP:8888 -sTCP:LISTEN` and stop or rebind any conflicting
+  process before retrying.
+- **Use the short / internal hostname** for `<compute_node>` (e.g.
+  `node-12`), not the public FQDN, when the login node only routes to
+  the cluster-internal interface.
+- If the tunnel hangs, verify reachability from the remote first:
   ```bash
-  ssh jtu9@cc-login.campuscluster.illinois.edu
-  nc -zv ccc0424 22     # must succeed
-  nc -zv ccc0424 8889   # must succeed — else the app server isn't up
+  ssh <user>@<remote>
+  nc -zv <host> 22         # SSH reachable
+  nc -zv <host> 8888       # backend up
+  nc -zv <host> 8889       # frontend up
   ```
-- If your SLURM job ends, sshd on the compute node will refuse new
-  connections. Re-request an allocation before reconnecting.
-- Local ports 8888/8889 must be free on your machine. Free them with
-  `lsof -iTCP:8888` / `lsof -iTCP:8889` before retrying.
-
-## ProxyJump alternative (does NOT work on ICC)
-
-On some clusters you can SSH directly into the compute node and
-forward from there:
-
-```bash
-ssh -J jtu9@cc-login.campuscluster.illinois.edu \
-    -L 8888:localhost:8888 -L 8889:localhost:8889 \
-    jtu9@ccc0424
-```
-
-**This fails on the Illinois Campus Cluster** — compute-node sshd
-uses `pam_slurm_adopt` plus restricted auth methods, so external
-logins bounce with `Permission denied (hostbased)` even when you
-have a live SLURM job on the node. There is no workaround: you must
-use the plain `-L through cc-login` form above. You never need a
-shell on the compute node to reach the dev servers — the login-node
-forward is sufficient.
+- If the host is allocated through a job scheduler and your job ends,
+  sshd on the host may refuse new connections. Re-request an allocation
+  before reconnecting.

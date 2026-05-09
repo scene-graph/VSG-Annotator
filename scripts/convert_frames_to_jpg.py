@@ -14,7 +14,9 @@ from PIL import Image
 
 
 QUALITY = 85
-DATASET_DIR = Path("/home/jtu9/sgg/VideoSGG_AnyGran/examples/pvsg_mid")
+# Override at the command line, e.g.:
+#     DATASET_DIR=/path/to/data python scripts/convert_frames_to_jpg.py
+DATASET_DIR = Path(os.environ.get("DATASET_DIR", "./data"))
 
 
 def convert_one(png_path: str) -> tuple[str, bool, str]:

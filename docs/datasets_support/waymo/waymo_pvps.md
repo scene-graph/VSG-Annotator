@@ -3,10 +3,10 @@
 ## Source Dataset
 
 **Waymo Open Dataset — Panoramic Video Panoptic Segmentation (PVPS)**
-- Location: `/scratch/jtu9/sgg/datasets/waymo_pvps/validation/`
+- Location: `{WAYMO_PVPS_ROOT}/validation/`
 - Format: Parquet files (v2.0.1)
 - Split: Validation (202 segments, 20 with panoptic labels)
-- We extracted 2 segments as samples into `/u/jtu9/scratch/sgg/annotations/sample_data/`
+- We extract 2 segments as samples into `{PVSG_MINI_PATH}/`
 
 ### Samples
 
@@ -178,7 +178,7 @@ sample_data/waymo_{segment_prefix}/
 ## Data Source Path
 
 ```
-/scratch/jtu9/sgg/datasets/waymo_pvps/validation/
+{WAYMO_PVPS_ROOT}/validation/
 ├── camera_image/{segment}.parquet         # JPEG images (binary column)
 ├── camera_segmentation/{segment}.parquet  # Panoptic labels + instance tracking mappings
 └── ...

@@ -1,6 +1,7 @@
 """Video routes for listing videos and serving frames."""
 
 import io
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -127,12 +128,13 @@ def _auto_link_variant_frames(pvsg_mini_path: Path) -> None:
         else:
             variants_needing_frames.append(d)
 
-    # Also check annotation sample_data for base frames
-    sample_data_dirs = [
-        Path("/u/jtu9/scratch/sgg/annotations/sample_data"),
-        Path("/u/jtu9/scratch/sgg/ai_pipeline/pvsg_annotated_40"),
+    # Optionally pull base frames from auxiliary roots configured via env.
+    # AUX_FRAME_ROOTS is a colon-separated list of directories; each child
+    # directory that contains a `frames/` subfolder is registered as a base.
+    aux_roots = [
+        Path(p) for p in os.environ.get("AUX_FRAME_ROOTS", "").split(":") if p
     ]
-    for sd in sample_data_dirs:
+    for sd in aux_roots:
         if sd.exists():
             for d in sd.iterdir():
                 if d.is_dir() and (d / "frames").exists() and d.name not in bases:

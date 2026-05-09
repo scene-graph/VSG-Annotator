@@ -1,11 +1,10 @@
 """Authoritative predicate vocabulary for validating edge_type ↔ predicate fit.
 
-Mirrors the harness schema in
-`/u/jtu9/scratch/sgg/video_agent_harness/src/vocabularies.py` and is used by
-the reclassification pass in `annotation_service._reclassify_edges_by_nodes`
-to drop edges whose stored predicate no longer belongs to the edge's
-reclassified vocabulary (e.g. a fg_bg `driving_on` edge that flipped to
-`static` would otherwise emit an invalid static-edge predicate).
+Mirrors the upstream harness vocabulary; consumed by the reclassification pass
+in `annotation_service._reclassify_edges_by_nodes` to drop edges whose stored
+predicate no longer belongs to the edge's reclassified vocabulary (e.g. a
+fg_bg `driving_on` edge that flipped to `static` would otherwise emit an
+invalid static-edge predicate).
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 """Export all annotated video scene graphs to a target directory.
 
 Usage:
-    python export_annotated.py [--output-dir /home/jtu9/sgg/annotated]
+    python export_annotated.py [--output-dir ./annotated]
                                [--status completed in_progress]
                                [--include-rejected]
 """
@@ -79,7 +79,7 @@ async def main():
     parser = argparse.ArgumentParser(description="Export annotated video scene graphs")
     parser.add_argument(
         "--output-dir", type=str,
-        default="/home/jtu9/sgg/annotated",
+        default="./annotated",
         help="Output directory for exported VSGs",
     )
     parser.add_argument(

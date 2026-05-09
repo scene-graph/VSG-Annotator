@@ -74,10 +74,10 @@ The current system has a **single user type** (no role hierarchy yet):
 
 ## Dataset
 
-**Current dataset**: `pvsg_annotated_40`
-- **Path**: `/u/jtu9/scratch/sgg/ai_pipeline/pvsg_annotated_40`
-- **Size**: 40 videos (20 ego4d + 20 epic_kitchen)
-- **Configured via**: `PVSG_MINI_PATH` in `.env`
+- **Path**: configured via `PVSG_MINI_PATH` in `.env`
+- **Layout**: one directory per video, named `<source>__<id>` (e.g.
+  `vidor_v2__1011_4633647136`); the source token round-trips as the
+  `Video.dataset` chip in the UI.
 
 **VSG filename**: `video_scene_graph.json` (no timestamp suffix)
 

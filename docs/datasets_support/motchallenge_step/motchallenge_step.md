@@ -3,7 +3,7 @@
 ## Source Dataset
 
 **MOTChallenge-STEP — Segmenting and Tracking Every Pixel**
-- Location: `/scratch/jtu9/sgg/datasets/MOTChallenge-STEP/`
+- Location: `{MOTCHALLENGE_STEP_ROOT}/`
 - Panoptic maps: extracted from `motchallenge-step.tar.gz` -> `panoptic_maps/train/{0002,0009}/`
 - RGB images: extracted from `step_images.zip` -> `train/STEP-ICCV21-{02,09}/`
 - Split: Train (2 sequences with annotations; test sequences have no annotations)
@@ -22,7 +22,7 @@
 ### Step 1: Archive Extraction
 
 ```bash
-cd /scratch/jtu9/sgg/datasets/MOTChallenge-STEP/
+cd {MOTCHALLENGE_STEP_ROOT}/
 tar xzf motchallenge-step.tar.gz    # -> panoptic_maps/train/{0002,0009}/
 unzip -q step_images.zip            # -> train/STEP-ICCV21-{02,09}/
 ```

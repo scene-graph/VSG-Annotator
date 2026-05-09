@@ -3,7 +3,7 @@
 ## Source Dataset
 
 **KITTI-STEP — Segmenting and Tracking Every Pixel**
-- Location: `/scratch/jtu9/sgg/datasets/KITTI-STEP/`
+- Location: `{KITTI_STEP_ROOT}/`
 - Panoptic maps: `kitti-step/panoptic_maps/{train,val}/{seq_id}/` (extracted from `kitti-step.tar.gz`)
 - RGB images: Pre-extracted in `sample_data/kitti_{seq}/frames/` (originally from `data_tracking_image_2.zip`)
 - Split: Validation (9 sequences, 2,981 frames)
@@ -25,7 +25,7 @@ KITTI frames were previously extracted into `sample_data/kitti_{seq}/frames/` as
 
 Panoptic masks are symlinked from the dataset:
 ```
-sample_data/kitti_0002/masks -> /scratch/jtu9/sgg/datasets/KITTI-STEP/kitti-step/panoptic_maps/val/0002/
+sample_data/kitti_0002/masks -> {KITTI_STEP_ROOT}/kitti-step/panoptic_maps/val/0002/
 ```
 
 Mask files are 6-digit PNGs (`000000.png` - `000232.png`). The backend `get_frame_path()` handles both naming conventions.
@@ -135,7 +135,7 @@ video_scene_graph.json
 ```
 sample_data/kitti_{seq}/
 ├── frames/          # 233-270 PNGs (0000.png - 0232.png), 4-digit 0-indexed
-├── masks -> /scratch/jtu9/sgg/datasets/KITTI-STEP/kitti-step/panoptic_maps/val/{seq}/
+├── masks -> {KITTI_STEP_ROOT}/kitti-step/panoptic_maps/val/{seq}/
 │                    # 233-270 PNGs (000000.png - 000232.png), 6-digit 0-indexed
 ├── masks_composite/ # Original composite-format masks (backup, not used)
 └── outputs/
