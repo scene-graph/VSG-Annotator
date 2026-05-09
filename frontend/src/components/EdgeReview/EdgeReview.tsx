@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Edge, MotionAttributes, TimePeriod } from '../../types';
 import { useAppStore, useCurrentUser, useSelectedEdge, useNodes, useEdgeCreation } from '../../store';
-import { useAcceptEdge, useRejectEdge, useModifyEdge, useDeleteEdge, useEdgeHistory } from '../../hooks';
+import { getLargestBBoxFrame } from '../../utils/edgeFrame';
+import { useAcceptEdge, useDeleteEdge, useEdgeHistory, useReextractJobs, useTriggerReextract } from '../../hooks';
 import { EdgeEditor } from './EdgeEditor';
 import { EdgeCreator } from './EdgeCreator';
 import { ValidationReasoning } from './ValidationReasoning';
@@ -12,6 +13,63 @@ interface EdgeReviewProps {
   videoId: string;
 }
 
+interface ReextractStatusPillProps {
+  status: 'pending' | 'running' | 'done' | 'failed';
+  prevType: string;
+  newType: string;
+  error?: string | null;
+  onRetry: () => void;
+}
+
+// Pill showing the state of the latest Gemini reextraction job for the
+// selected edge. "pending"/"running" indicate the backend is still
+// working; "done"/"failed" reflect the terminal state of the latest job.
+function ReextractStatusPill({ status, prevType, newType, error, onRetry }: ReextractStatusPillProps) {
+  const typeFlow = prevType === newType ? '' : ` (${prevType}→${newType})`;
+  if (status === 'pending' || status === 'running') {
+    return (
+      <span
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-200"
+        title={`Gemini is re-extracting this edge${typeFlow}`}
+      >
+        <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        {status === 'pending' ? 'queued' : 're-extracting'}
+      </span>
+    );
+  }
+  if (status === 'done') {
+    return (
+      <span
+        className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-300"
+        title={`Re-extracted after node type flip${typeFlow}`}
+      >
+        re-extracted
+      </span>
+    );
+  }
+  // failed
+  return (
+    <span
+      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300"
+      title={error || 'Gemini re-extraction failed'}
+    >
+      re-extract failed
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onRetry();
+        }}
+        className="underline hover:text-red-200"
+      >
+        retry
+      </button>
+    </span>
+  );
+}
+
 export function EdgeReview({ videoId }: EdgeReviewProps) {
   const selectedEdge = useSelectedEdge();
   const setSelectedEdge = useAppStore((state) => state.setSelectedEdge);
@@ -20,26 +78,49 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
   const showValidationReasoning = useAppStore((state) => state.showValidationReasoning);
   const setShowValidationReasoning = useAppStore((state) => state.setShowValidationReasoning);
   const nodes = useNodes();
-  const setSelectedNode = useAppStore((state) => state.setSelectedNode);
+  const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
+  const requestTrackletFocus = useAppStore((state) => state.requestTrackletFocus);
 
   // Edge creation state
   const edgeCreation = useEdgeCreation();
   const startEdgeCreation = useAppStore((state) => state.startEdgeCreation);
   const cancelEdgeCreation = useAppStore((state) => state.cancelEdgeCreation);
 
-  const [isEditing, setIsEditing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showConfidence, setShowConfidence] = useState(false);
+  const [showReviewNotes, setShowReviewNotes] = useState(false);
+  const [isSavingEdge, setIsSavingEdge] = useState(false);
+  const [edgeSaveError, setEdgeSaveError] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
 
   const acceptMutation = useAcceptEdge();
-  const rejectMutation = useRejectEdge();
-  const modifyMutation = useModifyEdge();
   const deleteMutation = useDeleteEdge();
 
   const { data: history } = useEdgeHistory(
     videoId,
     selectedEdge?.edge_id
   );
+
+  // Latest reextract job for this edge (for the header pill). These hooks
+  // must sit above the early returns below — otherwise the hook count
+  // changes between "no edge selected" and "edge selected" renders and
+  // React throws "Rendered more hooks than during the previous render".
+  const { data: allJobs } = useReextractJobs(videoId);
+  const triggerReextract = useTriggerReextract();
+  const latestJob = useMemo(() => {
+    if (!allJobs || !selectedEdge) return undefined;
+    return allJobs.find((j) => j.edge_id === selectedEdge.edge_id);
+  }, [allJobs, selectedEdge?.edge_id]);
+
+  // Reset panel UI state whenever a new edge is selected.
+  useEffect(() => {
+    if (selectedEdge) {
+      setShowConfidence(false);
+      setShowReviewNotes(false);
+      setShowValidationReasoning(false);
+      setEdgeSaveError(null);
+    }
+  }, [selectedEdge?.edge_id]);
 
   // Show EdgeCreator when in creation mode
   if (edgeCreation.isCreating) {
@@ -76,118 +157,108 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
     ? selectedEdge.target_category
     : [selectedEdge.target_category];
 
+  // node_id is immutable after a static/dynamic flip, so when a source/
+  // target pill's id no longer matches its current type we render an
+  // inline "(now static)" / "(now dynamic)" notice next to the id so the
+  // reviewer can see the discrepancy at a glance.
+  const getNodeTypeFlip = (nodeId: string): 'static' | 'dynamic' | null => {
+    const node = nodes.find((n) => n.node_id === nodeId);
+    if (!node) return null;
+    if (node.original_is_static == null) return null;
+    if (node.original_is_static === node.is_static) return null;
+    return node.is_static ? 'static' : 'dynamic';
+  };
+
+  // Clicking a source/target pill jumps to that node's own best-bbox frame
+  // while keeping the edge selected, so both subject (cyan) and target (magenta)
+  // overlays remain colored by their edge roles. Also asks TrackletTimeline
+  // to scroll that node into view so the user doesn't have to hunt for it.
   const handleNodeClick = (nodeId: string) => {
     const node = nodes.find(n => n.node_id === nodeId);
-    if (node) {
-      setSelectedNode(node);
-    }
+    if (!node) return;
+    const frame = getLargestBBoxFrame(node);
+    if (frame !== null) setCurrentFrame(frame);
+    requestTrackletFocus(nodeId);
   };
 
-  const handleAccept = async () => {
-    if (!currentUser) {
-      alert('Please select a user first');
-      return;
-    }
-
-    await acceptMutation.mutateAsync({
-      video_id: videoId,
-      edge_id: selectedEdge.edge_id,
-      edge_type: selectedEdge.edge_type,
-      user_id: currentUser.id,
-      notes: notes || undefined,
-    });
-
-    // Update selected edge to reflect accept action immediately
-    const updatedEdge: Edge = {
-      ...selectedEdge,
-      has_revision: true,
-      revision_action: 'accept',
+  const mergeTimePeriods = (periods: TimePeriod[]) => {
+    if (periods.length === 0) return { start_frame: 0, end_frame: 0 };
+    return {
+      start_frame: Math.min(...periods.map((p) => p.start_frame)),
+      end_frame: Math.max(...periods.map((p) => p.end_frame)),
     };
-    setSelectedEdge(updatedEdge);
-
-    // Also update the edges array so EdgeTimeline reflects changes immediately
-    const currentEdges = useAppStore.getState().edges;
-    const updatedEdges = currentEdges.map(e =>
-      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
-    );
-    setEdges(updatedEdges);
-
-    setNotes('');
   };
 
-  const handleReject = async () => {
-    if (!currentUser) {
-      alert('Please select a user first');
-      return;
-    }
-
-    await rejectMutation.mutateAsync({
-      video_id: videoId,
-      edge_id: selectedEdge.edge_id,
-      edge_type: selectedEdge.edge_type,
-      user_id: currentUser.id,
-      notes: notes || undefined,
-    });
-
-    // Update selected edge to reflect reject action immediately
-    const updatedEdge: Edge = {
-      ...selectedEdge,
-      has_revision: true,
-      revision_action: 'reject',
-    };
-    setSelectedEdge(updatedEdge);
-
-    // Also update the edges array so EdgeTimeline reflects changes immediately
-    const currentEdges = useAppStore.getState().edges;
-    const updatedEdges = currentEdges.map(e =>
-      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
-    );
-    setEdges(updatedEdges);
-
-    setNotes('');
-  };
-
-  const handleModify = (changes: {
+  const handleSaveAccept = async (changes: {
     predicate?: string;
-    time_period?: TimePeriod;
+    time_periods?: TimePeriod[];
     attributes?: MotionAttributes;
   }) => {
     if (!currentUser) {
       alert('Please select a user first');
       return;
     }
+    if (isSavingEdge) {
+      return;
+    }
 
-    // Build the updated edge FIRST
-    const updatedEdge: Edge = {
-      ...selectedEdge,
-      predicate: changes.predicate ?? selectedEdge.predicate,
-      time_period: changes.time_period ?? selectedEdge.time_period,
-      attributes: changes.attributes ?? selectedEdge.attributes,
-      has_revision: true,
-      revision_action: 'modify',
-    };
+    // Every accept revision must snapshot the full effective state the
+    // user is approving. The backend overlay only reads the latest
+    // revision per edge, so an accept with null `new_*` fields masks
+    // earlier modifies (e.g. an EdgeTimeline drag) and the next refetch
+    // reverts to VSG. Falling back to `selectedEdge` — which already
+    // reflects prior revisions via the overlay — keeps the drag's state
+    // in the newly recorded accept.
+    const effectivePeriods = changes.time_periods
+      ?? (selectedEdge.time_periods && selectedEdge.time_periods.length > 0
+        ? selectedEdge.time_periods
+        : [selectedEdge.time_period]);
+    const effectivePredicate = changes.predicate ?? selectedEdge.predicate;
+    const effectiveAttributes = changes.attributes ?? selectedEdge.attributes;
+    const mergedPeriod = mergeTimePeriods(effectivePeriods);
 
-    // Update store immediately (optimistic update)
-    setSelectedEdge(updatedEdge);
-    const currentEdges = useAppStore.getState().edges;
-    const updatedEdges = currentEdges.map(e =>
-      e.edge_id === selectedEdge.edge_id ? updatedEdge : e
-    );
-    setEdges(updatedEdges);
-    setIsEditing(false);
-    setNotes('');
+    setEdgeSaveError(null);
+    setIsSavingEdge(true);
+    try {
+      await acceptMutation.mutateAsync({
+        video_id: videoId,
+        edge_id: selectedEdge.edge_id,
+        edge_type: selectedEdge.edge_type,
+        user_id: currentUser.id,
+        new_predicate: effectivePredicate,
+        new_time_periods: effectivePeriods,
+        new_attributes: effectiveAttributes,
+        notes: notes || undefined,
+      });
 
-    // Send API call in background (non-blocking)
-    modifyMutation.mutate({
-      video_id: videoId,
-      edge_id: selectedEdge.edge_id,
-      edge_type: selectedEdge.edge_type,
-      user_id: currentUser.id,
-      new_predicate: changes.predicate,
-      new_time_period: changes.time_period,
-      new_attributes: changes.attributes,
-      notes: notes || undefined,
-    });
+      // Build and apply updated edge only after server confirms save+accept.
+      const updatedEdge: Edge = {
+        ...selectedEdge,
+        predicate: effectivePredicate,
+        time_period: mergedPeriod,
+        time_periods: effectivePeriods,
+        attributes: effectiveAttributes,
+        has_revision: true,
+        revision_action: 'accept',
+      };
+
+      setSelectedEdge(updatedEdge);
+      const currentEdges = useAppStore.getState().edges;
+      const updatedEdges = currentEdges.map(e =>
+        e.edge_id === selectedEdge.edge_id ? updatedEdge : e
+      );
+      setEdges(updatedEdges);
+      setNotes('');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setEdgeSaveError(message);
+      // Re-throw so outer callers (e.g. the top-row SaveButton that
+      // triggered a commit before its sync) can surface the failure
+      // and skip the subsequent sync step.
+      throw error;
+    } finally {
+      setIsSavingEdge(false);
+    }
   };
 
   const handleDelete = async () => {
@@ -230,6 +301,15 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
             {selectedEdge.edge_type}
           </span>
           <span className="text-white font-mono text-sm">{selectedEdge.edge_id}</span>
+          {latestJob && (
+            <ReextractStatusPill
+              status={latestJob.status}
+              prevType={latestJob.prev_edge_type}
+              newType={latestJob.new_edge_type}
+              error={latestJob.error}
+              onRetry={() => triggerReextract.mutate({ videoId, edgeId: selectedEdge.edge_id })}
+            />
+          )}
         </div>
         <button
           onClick={() => setSelectedEdge(null)}
@@ -249,20 +329,31 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
             <div className="flex-1">
               <div className="text-xs uppercase mb-1" style={{ color: '#00d4ff' }}>Source</div>
               <div className="text-white text-sm">
-                {sourceCategories.map((cat, i) => (
-                  <span
-                    key={sources[i]}
-                    onClick={() => handleNodeClick(sources[i])}
-                    className="inline-block px-2 py-1 rounded mr-1 mb-1 border cursor-pointer hover:opacity-80 transition-opacity"
-                    style={{
-                      backgroundColor: 'rgba(0, 212, 255, 0.15)',
-                      borderColor: '#00d4ff',
-                    }}
-                  >
-                    <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: '#00d4ff' }} />
-                    {cat} <span className="text-gray-400">({sources[i]})</span>
-                  </span>
-                ))}
+                {sourceCategories.map((cat, i) => {
+                  const flip = getNodeTypeFlip(sources[i]);
+                  return (
+                    <span
+                      key={sources[i]}
+                      onClick={() => handleNodeClick(sources[i])}
+                      className="inline-block px-2 py-1 rounded mr-1 mb-1 border cursor-pointer hover:opacity-80 transition-opacity"
+                      style={{
+                        backgroundColor: 'rgba(0, 212, 255, 0.15)',
+                        borderColor: '#00d4ff',
+                      }}
+                    >
+                      <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: '#00d4ff' }} />
+                      {cat} <span className="text-gray-400">({sources[i]})</span>
+                      {flip && (
+                        <span
+                          className="ml-1.5 px-1 py-0.5 rounded text-[10px] bg-yellow-500/20 text-yellow-300 align-middle"
+                          title={`node_id is kept immutable; this node is now ${flip}.`}
+                        >
+                          now {flip}
+                        </span>
+                      )}
+                    </span>
+                  );
+                })}
               </div>
             </div>
             <div className="text-orange-400 font-semibold px-3 text-center">
@@ -274,20 +365,31 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
             <div className="flex-1 text-right">
               <div className="text-xs uppercase mb-1" style={{ color: '#ff00d4' }}>Target</div>
               <div className="text-white text-sm">
-                {targetCategories.map((cat, i) => (
-                  <span
-                    key={targets[i]}
-                    onClick={() => handleNodeClick(targets[i])}
-                    className="inline-block px-2 py-1 rounded mr-1 mb-1 border cursor-pointer hover:opacity-80 transition-opacity"
-                    style={{
-                      backgroundColor: 'rgba(255, 0, 212, 0.15)',
-                      borderColor: '#ff00d4',
-                    }}
-                  >
-                    <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: '#ff00d4' }} />
-                    {cat} <span className="text-gray-400">({targets[i]})</span>
-                  </span>
-                ))}
+                {targetCategories.map((cat, i) => {
+                  const flip = getNodeTypeFlip(targets[i]);
+                  return (
+                    <span
+                      key={targets[i]}
+                      onClick={() => handleNodeClick(targets[i])}
+                      className="inline-block px-2 py-1 rounded mr-1 mb-1 border cursor-pointer hover:opacity-80 transition-opacity"
+                      style={{
+                        backgroundColor: 'rgba(255, 0, 212, 0.15)',
+                        borderColor: '#ff00d4',
+                      }}
+                    >
+                      <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: '#ff00d4' }} />
+                      {cat} <span className="text-gray-400">({targets[i]})</span>
+                      {flip && (
+                        <span
+                          className="ml-1.5 px-1 py-0.5 rounded text-[10px] bg-yellow-500/20 text-yellow-300 align-middle"
+                          title={`node_id is kept immutable; this node is now ${flip}.`}
+                        >
+                          now {flip}
+                        </span>
+                      )}
+                    </span>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -297,76 +399,69 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
         <div className="bg-gray-700 rounded p-3">
           <div className="text-gray-400 text-xs uppercase mb-1">Time Period</div>
           <div className="text-white">
-            Frame {selectedEdge.time_period.start_frame} - {selectedEdge.time_period.end_frame}
-            <span className="text-gray-400 ml-2">
-              ({selectedEdge.time_period.end_frame - selectedEdge.time_period.start_frame + 1} frames)
-            </span>
+            {(selectedEdge.time_periods && selectedEdge.time_periods.length > 0
+              ? selectedEdge.time_periods
+              : [selectedEdge.time_period]
+            ).map((tp, idx) => (
+              <span key={`${tp.start_frame}-${tp.end_frame}-${idx}`} className="inline-block mr-2">
+                Frame {tp.start_frame} - {tp.end_frame}
+                <span className="text-gray-400 ml-1">
+                  ({tp.end_frame - tp.start_frame + 1} frames)
+                </span>
+              </span>
+            ))}
           </div>
         </div>
 
-        {/* Motion attributes (for dynamic edges) */}
-        {selectedEdge.attributes && (
-          <div className="bg-gray-700 rounded p-3">
-            <div className="text-gray-400 text-xs uppercase mb-2">Motion Attributes</div>
-            <div className="space-y-2">
-              {/* Velocity Row */}
-              <div className="flex items-center justify-between">
-                <span className="text-gray-400 text-sm">Velocity</span>
-                <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-sm">
-                  {selectedEdge.attributes.velocity}
-                </span>
-              </div>
-              {/* Direction Row */}
-              <div className="flex items-center justify-between">
-                <span className="text-gray-400 text-sm">Direction</span>
-                <span className="px-2 py-0.5 rounded bg-green-500/20 text-green-400 text-sm">
-                  {selectedEdge.attributes.direction}
-                </span>
-              </div>
-              {/* Trajectory Row */}
-              <div className="flex items-center justify-between">
-                <span className="text-gray-400 text-sm">Trajectory</span>
-                <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-400 text-sm">
-                  {selectedEdge.attributes.trajectory}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Confidence & validation */}
-        <div className="bg-gray-700 rounded p-3">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-gray-400 text-xs uppercase">Confidence</div>
-            <div className="flex items-center gap-2">
-              <span className={clsx(
-                'px-2 py-0.5 rounded text-xs',
-                selectedEdge.validated ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-              )}>
-                {selectedEdge.validated ? 'Validated' : 'Not Validated'}
-              </span>
-              <span className={clsx(
-                'px-2 py-0.5 rounded text-xs',
-                selectedEdge.extraction_round === 0 ? 'bg-blue-500/20 text-blue-400' : 'bg-yellow-500/20 text-yellow-400'
-              )}>
-                {selectedEdge.extraction_round === 0 ? 'PVSG GT' : 'GPT Extracted'}
-              </span>
+        <div className="bg-gray-700 rounded overflow-hidden">
+          <button
+            onClick={() => setShowConfidence(!showConfidence)}
+            className="w-full flex items-center justify-between p-3 hover:bg-gray-600 transition-colors"
+          >
+            <span className="text-gray-400 text-xs uppercase">Confidence</span>
+            <svg
+              className={clsx('w-4 h-4 text-gray-400 transition-transform', showConfidence && 'rotate-180')}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          {showConfidence && (
+            <div className="px-3 pb-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className={clsx(
+                  'px-2 py-0.5 rounded text-xs',
+                  selectedEdge.validated ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                )}>
+                  {selectedEdge.validated ? 'Validated' : 'Not Validated'}
+                </span>
+                <span className={clsx(
+                  'px-2 py-0.5 rounded text-xs',
+                  selectedEdge.extraction_round === 0 ? 'bg-blue-500/20 text-blue-400' : 'bg-yellow-500/20 text-yellow-400'
+                )}>
+                  {selectedEdge.extraction_round === 0 ? 'PVSG GT' : 'GPT Extracted'}
+                </span>
+              </div>
+              <div className="flex gap-4">
+                <div>
+                  <span className="text-gray-400 text-xs">Overall:</span>
+                  <span className="text-white ml-1 font-mono">{selectedEdge.confidence.toFixed(2)}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 text-xs">Round 1:</span>
+                  <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round1.toFixed(2)}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 text-xs">Round 2:</span>
+                  <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round2.toFixed(2)}</span>
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="flex gap-4">
-            <div>
-              <span className="text-gray-400 text-xs">Overall:</span>
-              <span className="text-white ml-1 font-mono">{selectedEdge.confidence.toFixed(2)}</span>
-            </div>
-            <div>
-              <span className="text-gray-400 text-xs">Round 1:</span>
-              <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round1.toFixed(2)}</span>
-            </div>
-            <div>
-              <span className="text-gray-400 text-xs">Round 2:</span>
-              <span className="text-white ml-1 font-mono">{selectedEdge.confidence_round2.toFixed(2)}</span>
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Validation Reasoning */}
@@ -394,56 +489,49 @@ export function EdgeReview({ videoId }: EdgeReviewProps) {
 
       {/* Notes input */}
       <div className="mb-4">
-        <label className="text-gray-400 text-xs uppercase block mb-1">Review Notes</label>
-        <textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder="Optional notes about this review..."
-          className="w-full bg-gray-700 text-white rounded p-2 text-sm resize-none"
-          rows={2}
-        />
+        <div className="bg-gray-700 rounded overflow-hidden">
+          <button
+            onClick={() => setShowReviewNotes(!showReviewNotes)}
+            className="w-full flex items-center justify-between p-3 hover:bg-gray-600 transition-colors"
+          >
+            <span className="text-gray-400 text-xs uppercase">Review Notes</span>
+            <svg
+              className={clsx('w-4 h-4 text-gray-400 transition-transform', showReviewNotes && 'rotate-180')}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {showReviewNotes && (
+            <div className="px-3 pb-3">
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Optional notes about this review..."
+                className="w-full bg-gray-700 text-white rounded p-2 text-sm resize-none border border-gray-600"
+                rows={2}
+              />
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Action buttons */}
-      {isEditing ? (
-        <EdgeEditor
-          edge={selectedEdge}
-          videoId={videoId}
-          onSave={handleModify}
-          onCancel={() => setIsEditing(false)}
-        />
-      ) : (
-        <div className="flex gap-2">
-          <button
-            onClick={handleAccept}
-            disabled={acceptMutation.isPending}
-            className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-green-800 text-white py-2 rounded font-semibold"
-          >
-            Accept
-          </button>
-          <button
-            onClick={handleReject}
-            disabled={rejectMutation.isPending}
-            className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-red-800 text-white py-2 rounded font-semibold"
-          >
-            Reject
-          </button>
-          <button
-            onClick={() => setIsEditing(true)}
-            className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white py-2 rounded font-semibold"
-          >
-            Modify
-          </button>
-          <button
-            onClick={handleDelete}
-            disabled={deleteMutation.isPending}
-            className="px-3 py-2 bg-red-900 hover:bg-red-800 disabled:opacity-50 text-red-200 rounded font-semibold transition-colors"
-            title="Permanently delete this edge"
-          >
-            {deleteMutation.isPending ? '...' : 'Delete'}
-          </button>
-        </div>
-      )}
+      {/* Single-layer editing: Save both updates and accepts */}
+      <EdgeEditor
+        edge={selectedEdge}
+        videoId={videoId}
+        onSave={handleSaveAccept}
+        onDelete={handleDelete}
+        onCancel={() => {
+          setEdgeSaveError(null);
+          setSelectedEdge(null);
+        }}
+        isSaving={isSavingEdge}
+        isDeleting={deleteMutation.isPending}
+        saveError={edgeSaveError}
+      />
 
       {/* History toggle */}
       <div className="mt-4">

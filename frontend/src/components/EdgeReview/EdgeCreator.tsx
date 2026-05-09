@@ -219,6 +219,7 @@ export function EdgeCreator({ videoId, onSuccess }: EdgeCreatorProps) {
         target,
         predicate,
         time_period: { start_frame: startFrame, end_frame: endFrame },
+        time_periods: [{ start_frame: startFrame, end_frame: endFrame }],
         attributes,
         notes: notes || undefined,
       });
@@ -244,6 +245,7 @@ export function EdgeCreator({ videoId, onSuccess }: EdgeCreatorProps) {
         validation_reasoning_round1: '',
         validation_reasoning_round2: 'Manually created by user',
         time_period: { start_frame: startFrame, end_frame: endFrame },
+        time_periods: [{ start_frame: startFrame, end_frame: endFrame }],
         attributes: attributes,
         has_revision: true,
         revision_action: 'create',

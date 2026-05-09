@@ -39,7 +39,7 @@ async def import_sample(sample: dict) -> bool:
             vsg_path=sample["vsg_path"],
             frames_path=sample["frames_path"],
             masks_path=sample.get("masks_path"),
-            dataset=metadata.get("dataset"),
+            dataset=sample.get("source_tag") or metadata.get("dataset"),
             status="pending",
             total_frames=metadata.get("total_frames"),
             fps=metadata.get("fps"),

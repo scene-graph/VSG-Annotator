@@ -1,5 +1,7 @@
+import { useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient, useIsMutating } from '@tanstack/react-query';
-import { videosApi, edgesApi, annotationsApi, importApi } from '../services/api';
+import { videosApi, edgesApi, annotationsApi, importApi, reextractApi } from '../services/api';
+import type { ReextractJob } from '../services/api';
 import type {
   AnnotationAccept,
   AnnotationReject,
@@ -229,6 +231,12 @@ export function useModifyNode() {
           query.queryKey[0] === 'nodes' && query.queryKey[1] === variables.video_id
       });
       queryClient.invalidateQueries({ queryKey: ['nodeHistory', variables.video_id, variables.node_id] });
+      queryClient.invalidateQueries({ queryKey: ['exportSummary', variables.video_id] });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'edges' && query.queryKey[1] === variables.video_id
+      });
+      queryClient.invalidateQueries({ queryKey: ['edgeStats', variables.video_id] });
     },
   });
 }
@@ -292,12 +300,29 @@ export function useImportVsg() {
   });
 }
 
+// Upper bound for how long sync() will wait for in-flight mutations to
+// settle before forcing a refetch. 10s is well above any realistic
+// accept/modify/create roundtrip, so hitting this cap indicates the
+// server is unreachable and a stale refetch is the lesser evil.
+const SYNC_MUTATION_TIMEOUT_MS = 10_000;
+const SYNC_POLL_INTERVAL_MS = 50;
+
 export function useSyncData(videoId: string) {
   const queryClient = useQueryClient();
   const isMutating = useIsMutating();
 
   const sync = async () => {
-    // Wait for any pending mutations to settle
+    // Wait for any in-flight mutations (e.g. the EdgeTimeline drag's
+    // fire-and-forget modify) to fully commit on the server before we
+    // invalidate and refetch. Otherwise the refetch races the POST and
+    // can return pre-revision data, silently overwriting the user's
+    // optimistic update.
+    const deadline = Date.now() + SYNC_MUTATION_TIMEOUT_MS;
+    while (queryClient.isMutating() > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
+    }
+
+    // Cancel in-flight queries so they don't clash with the refetch.
     await queryClient.cancelQueries();
 
     // Invalidate and refetch all video-related queries
@@ -323,4 +348,61 @@ export function useSyncData(videoId: string) {
   };
 
   return { sync, isMutating: isMutating > 0 };
+}
+
+/**
+ * Poll Gemini reextraction jobs for this video.
+ *
+ * When any job is still pending/running, refetch every 2s; once all jobs
+ * are terminal the query idles. Each time a job transitions from
+ * pending/running → done, we invalidate the edges query so the UI picks
+ * up the new predicate/attributes the worker wrote as an edge revision.
+ */
+export function useReextractJobs(videoId: string | undefined) {
+  const queryClient = useQueryClient();
+  const prevRunningIdsRef = useRef<Set<number>>(new Set());
+
+  const query = useQuery({
+    queryKey: ['reextractJobs', videoId],
+    queryFn: () => reextractApi.listJobs(videoId!),
+    enabled: !!videoId,
+    refetchInterval: (query) => {
+      const data = (query.state.data as ReextractJob[] | undefined) ?? [];
+      const hasActive = data.some((j) => j.status === 'pending' || j.status === 'running');
+      return hasActive ? 2000 : false;
+    },
+  });
+
+  useEffect(() => {
+    if (!videoId || !query.data) return;
+    const currentRunningIds = new Set<number>(
+      query.data.filter((j) => j.status === 'pending' || j.status === 'running').map((j) => j.id)
+    );
+    // Jobs that were running last tick but aren't now — they completed
+    // (done or failed) since the last poll. Invalidate edges so modify
+    // revisions produced by the worker flow into the UI.
+    const completed: number[] = [];
+    for (const prevId of prevRunningIdsRef.current) {
+      if (!currentRunningIds.has(prevId)) completed.push(prevId);
+    }
+    if (completed.length > 0) {
+      queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === 'edges' && q.queryKey[1] === videoId,
+      });
+    }
+    prevRunningIdsRef.current = currentRunningIds;
+  }, [videoId, query.data, queryClient]);
+
+  return query;
+}
+
+export function useTriggerReextract() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ videoId, edgeId }: { videoId: string; edgeId: string }) =>
+      reextractApi.triggerEdge(videoId, edgeId),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['reextractJobs', variables.videoId] });
+    },
+  });
 }

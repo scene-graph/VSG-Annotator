@@ -1,16 +1,35 @@
 import { create } from 'zustand';
 import type { Edge, EdgeFilters, EdgeType, Node, User, VideoDetail } from '../types';
+import type { AttributeSuggestionResponse } from '../services/ai';
 
 // Edge drag state for sharing between EdgeTimeline and TrackletTimeline
 export interface EdgeDragState {
   edgeId: string;
+  segmentIndex: number;
   handle: 'left' | 'right';
   currentStartFrame: number;
   currentEndFrame: number;
 }
 
+// Unsaved edit in the right-panel EdgeEditor. The top-row SaveButton
+// reads this and calls commit() before running its sync, so "Save" in
+// both places persists in-flight edits instead of dropping them.
+export interface PendingEdgeEdit {
+  edgeId: string;
+  commit: () => Promise<void>;
+}
+
+// One-shot request from other panels (e.g. EdgeReview clicking a
+// source/target pill) asking the TrackletTimeline to scroll the given
+// node into view. The nonce bumps on every request so repeat clicks on
+// the same node still trigger a fresh scroll.
+export interface TrackletFocusRequest {
+  nodeId: string;
+  nonce: number;
+}
+
 // Annotation mode: viewing nodes or edges
-export type AnnotationMode = 'nodes' | 'edges';
+export type AnnotationMode = 'nodes' | 'edges' | 'segmentation';
 
 // Edge creation state
 export type EdgeCreationStep = 'select-source' | 'select-target' | 'configure';
@@ -22,6 +41,10 @@ export interface EdgeCreationState {
   targetNodeIds: string[];
   edgeType: EdgeType | null;
 }
+
+const AI_SUGGESTION_STORAGE_VERSION = 1;
+
+type AISuggestionSource = 'bulk' | 'single';
 
 interface AppState {
   // Current video
@@ -75,9 +98,23 @@ interface AppState {
   setSourceNodes: (nodeIds: string[]) => void;
   setTargetNodes: (nodeIds: string[]) => void;
 
+  // Video list source filter (persists across navigation)
+  sourceFilter: string;
+  setSourceFilter: (filter: string) => void;
+
   // Edge drag state (for syncing EdgeTimeline drag with TrackletTimeline)
   edgeDragState: EdgeDragState | null;
   setEdgeDragState: (state: EdgeDragState | null) => void;
+
+  // Unsaved edit in EdgeEditor (right panel). Non-null while user has
+  // uncommitted changes; top-row SaveButton invokes commit before syncing.
+  pendingEdgeEdit: PendingEdgeEdit | null;
+  setPendingEdgeEdit: (edit: PendingEdgeEdit | null) => void;
+
+  // Cross-panel scroll intent: EdgeReview pill clicks fire
+  // requestTrackletFocus to ask TrackletTimeline to center a node.
+  trackletFocusRequest: TrackletFocusRequest | null;
+  requestTrackletFocus: (nodeId: string) => void;
 
   // Edge creation state
   edgeCreation: EdgeCreationState;
@@ -88,18 +125,109 @@ interface AppState {
   proceedToTarget: () => void;
   proceedToConfigure: () => void;
   setEdgeCreationType: (edgeType: EdgeType | null) => void;
+
+  // BBox overlay state
+  bboxesVisible: boolean;
+  setBboxesVisible: (v: boolean) => void;
+
+  // Mask overlay state
+  masksVisible: boolean;
+  setMasksVisible: (v: boolean) => void;
+  maskOpacity: number;
+  setMaskOpacity: (v: number) => void;
+  selectedMaskObject: number | string | null;
+  setSelectedMaskObject: (id: number | string | null) => void;
+  hiddenMaskObjects: Set<number | string>;
+  toggleMaskObject: (id: number | string) => void;
+
+  // Refinement tools
+  segmentationTool: string;
+  setSegmentationTool: (tool: string) => void;
+  pendingBoxes: Array<{ x1: number; y1: number; x2: number; y2: number; label: number }>;
+  addPendingBox: (box: { x1: number; y1: number; x2: number; y2: number; label: number }) => void;
+  clearPendingBoxes: () => void;
+  refinementPreviewB64: string | null;
+  setRefinementPreview: (b64: string | null) => void;
+  isRefining: boolean;
+  setIsRefining: (v: boolean) => void;
+
+  // AI suggestions (node attributes)
+  aiProvider: 'openai' | 'gemini';
+  setAiProvider: (provider: 'openai' | 'gemini') => void;
+  aiSuggestionsByNode: Record<string, AttributeSuggestionResponse>;
+  aiSuggestionStatusByNode: Record<string, 'idle' | 'pending' | 'done' | 'error'>;
+  aiSuggestionFrameByNode: Record<string, number>;
+  aiSuggestionSourceByNode: Record<string, AISuggestionSource>;
+  bulkAiProgress: { total: number; completed: number; running: boolean; cancelled: boolean };
+  setAiSuggestion: (
+    nodeId: string,
+    suggestion: AttributeSuggestionResponse,
+    frameIdx: number,
+    source: AISuggestionSource
+  ) => void;
+  setAiSuggestionStatus: (nodeId: string, status: 'idle' | 'pending' | 'done' | 'error') => void;
+  clearAiSuggestion: (nodeId: string) => void;
+  startBulkAi: (total: number) => void;
+  updateBulkAiProgress: (completed: number) => void;
+  finishBulkAi: () => void;
+  cancelBulkAi: () => void;
+  resetBulkAi: () => void;
+
+  // Persistence helpers
+  hydrateAiSuggestions: (videoId: string) => void;
+  clearAiSuggestions: () => void;
 }
 
 const initialFilters: EdgeFilters = {};
 
+type AiSnapshot = Pick<
+  AppState,
+  | 'aiSuggestionsByNode'
+  | 'aiSuggestionFrameByNode'
+  | 'aiSuggestionSourceByNode'
+  | 'aiSuggestionStatusByNode'
+  | 'bulkAiProgress'
+>;
+
+const buildAiSnapshot = (state: AppState, overrides: Partial<AiSnapshot> = {}): AiSnapshot => ({
+  aiSuggestionsByNode: overrides.aiSuggestionsByNode ?? state.aiSuggestionsByNode,
+  aiSuggestionFrameByNode: overrides.aiSuggestionFrameByNode ?? state.aiSuggestionFrameByNode,
+  aiSuggestionSourceByNode: overrides.aiSuggestionSourceByNode ?? state.aiSuggestionSourceByNode,
+  aiSuggestionStatusByNode: overrides.aiSuggestionStatusByNode ?? state.aiSuggestionStatusByNode,
+  bulkAiProgress: overrides.bulkAiProgress ?? state.bulkAiProgress,
+});
+
+const persistAiSnapshot = (videoId: string, snapshot: AiSnapshot) => {
+  if (!videoId || typeof localStorage === 'undefined') {
+    return;
+  }
+  localStorage.setItem(
+    `ai_suggestions:${videoId}`,
+    JSON.stringify({ version: AI_SUGGESTION_STORAGE_VERSION, ...snapshot })
+  );
+};
+
 export const useAppStore = create<AppState>((set) => ({
   // Current video
   currentVideo: null,
-  setCurrentVideo: (video) => set({ currentVideo: video }),
+  setCurrentVideo: (video) => set({
+    currentVideo: video,
+    currentFrame: 0  // Reset frame when switching videos
+  }),
 
   // Current frame
   currentFrame: 0,
-  setCurrentFrame: (frame) => set({ currentFrame: frame }),
+  setCurrentFrame: (frame) => set((state) => {
+    // Validate frame is within bounds
+    const video = state.currentVideo;
+    if (video && video.total_frames) {
+      // Clamp frame to valid range [0, totalFrames - 1]
+      const validFrame = Math.max(0, Math.min(frame, video.total_frames - 1));
+      return { currentFrame: validFrame };
+    }
+    // If no video or total_frames, just ensure non-negative
+    return { currentFrame: Math.max(0, frame) };
+  }),
 
   // Nodes
   nodes: [],
@@ -111,22 +239,36 @@ export const useAppStore = create<AppState>((set) => ({
 
   // Selected edge (mutually exclusive with selectedNode)
   selectedEdge: null,
-  setSelectedEdge: (edge) => {
-    // When selecting an edge, clear selected node and track source/target nodes
-    if (edge) {
+  setSelectedEdge: (edge) =>
+    set((state) => {
+      if (!edge) {
+        return { selectedEdge: null, sourceNodes: [], targetNodes: [] };
+      }
+
       const sources = Array.isArray(edge.source) ? edge.source : [edge.source];
       const targets = Array.isArray(edge.target) ? edge.target : [edge.target];
-      set({
+
+      // Only fire a tracklet focus request when the user genuinely
+      // switches to a different edge — reselecting the same edge (e.g.
+      // after an accept updates `selectedEdge` in place) shouldn't
+      // yank the object-tracklet panel around.
+      const isNewEdge = state.selectedEdge?.edge_id !== edge.edge_id;
+      const trackletFocusRequest = isNewEdge && sources[0]
+        ? {
+            nodeId: sources[0],
+            nonce: (state.trackletFocusRequest?.nonce ?? 0) + 1,
+          }
+        : state.trackletFocusRequest;
+
+      return {
         selectedEdge: edge,
-        selectedNode: null,  // Clear node selection
+        selectedNode: null,
         sourceNodes: sources,
         targetNodes: targets,
-        annotationMode: 'edges',  // Auto-switch to edges mode
-      });
-    } else {
-      set({ selectedEdge: null, sourceNodes: [], targetNodes: [] });
-    }
-  },
+        annotationMode: 'edges',
+        trackletFocusRequest,
+      };
+    }),
 
   // Selected node (mutually exclusive with selectedEdge)
   selectedNode: null,
@@ -158,8 +300,8 @@ export const useAppStore = create<AppState>((set) => ({
     })),
   clearFilters: () => set({ filters: initialFilters }),
 
-  // User
-  currentUser: null,
+  // User — default to admin
+  currentUser: { id: 1, username: 'admin' },
   setCurrentUser: (user) => set({ currentUser: user }),
 
   // UI State
@@ -175,9 +317,27 @@ export const useAppStore = create<AppState>((set) => ({
   setSourceNodes: (nodeIds) => set({ sourceNodes: nodeIds }),
   setTargetNodes: (nodeIds) => set({ targetNodes: nodeIds }),
 
+  // Video list source filter
+  sourceFilter: 'all',
+  setSourceFilter: (filter) => set({ sourceFilter: filter }),
+
   // Edge drag state
   edgeDragState: null,
   setEdgeDragState: (state) => set({ edgeDragState: state }),
+
+  // Pending edit in EdgeEditor
+  pendingEdgeEdit: null,
+  setPendingEdgeEdit: (edit) => set({ pendingEdgeEdit: edit }),
+
+  // Tracklet focus request
+  trackletFocusRequest: null,
+  requestTrackletFocus: (nodeId) =>
+    set((state) => ({
+      trackletFocusRequest: {
+        nodeId,
+        nonce: (state.trackletFocusRequest?.nonce ?? 0) + 1,
+      },
+    })),
 
   // Edge creation state
   edgeCreation: {
@@ -247,6 +407,205 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       edgeCreation: { ...state.edgeCreation, edgeType },
     })),
+
+  // BBox overlay state
+  bboxesVisible: true,
+  setBboxesVisible: (v) => set({ bboxesVisible: v }),
+
+  // Mask overlay state
+  masksVisible: false,
+  setMasksVisible: (v) => set({ masksVisible: v }),
+  maskOpacity: 0.45,
+  setMaskOpacity: (v) => set({ maskOpacity: v }),
+  selectedMaskObject: null,
+  setSelectedMaskObject: (id) => set({ selectedMaskObject: id }),
+  hiddenMaskObjects: new Set<number | string>(),
+  toggleMaskObject: (id) =>
+    set((state) => {
+      const next = new Set(state.hiddenMaskObjects);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { hiddenMaskObjects: next };
+    }),
+
+  // Refinement tools
+  segmentationTool: 'select',
+  setSegmentationTool: (tool) => set({ segmentationTool: tool }),
+  pendingBoxes: [],
+  addPendingBox: (box) => set((state) => ({ pendingBoxes: [...state.pendingBoxes, box] })),
+  clearPendingBoxes: () => set({ pendingBoxes: [], refinementPreviewB64: null }),
+  refinementPreviewB64: null,
+  setRefinementPreview: (b64) => set({ refinementPreviewB64: b64 }),
+  isRefining: false,
+  setIsRefining: (v) => set({ isRefining: v }),
+
+  // AI suggestions
+  aiProvider: 'openai',
+  setAiProvider: (provider) => set({ aiProvider: provider }),
+  aiSuggestionsByNode: {},
+  aiSuggestionStatusByNode: {},
+  aiSuggestionFrameByNode: {},
+  aiSuggestionSourceByNode: {},
+  bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+  setAiSuggestion: (nodeId, suggestion, frameIdx, source) =>
+    set((state) => {
+      const next = {
+        aiSuggestionsByNode: { ...state.aiSuggestionsByNode, [nodeId]: suggestion },
+        aiSuggestionFrameByNode: { ...state.aiSuggestionFrameByNode, [nodeId]: frameIdx },
+        aiSuggestionSourceByNode: { ...state.aiSuggestionSourceByNode, [nodeId]: source },
+        aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: 'done' },
+      };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
+    }),
+  setAiSuggestionStatus: (nodeId, status) =>
+    set((state) => {
+      const next = {
+        aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: status },
+      };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(
+          videoId,
+          buildAiSnapshot(state, { aiSuggestionStatusByNode: next.aiSuggestionStatusByNode })
+        );
+      }
+      return next;
+    }),
+  clearAiSuggestion: (nodeId) =>
+    set((state) => {
+      const { [nodeId]: _removedSuggestion, ...remainingSuggestions } = state.aiSuggestionsByNode;
+      const { [nodeId]: _removedFrame, ...remainingFrames } = state.aiSuggestionFrameByNode;
+      const { [nodeId]: _removedSource, ...remainingSources } = state.aiSuggestionSourceByNode;
+      const next = {
+        aiSuggestionsByNode: remainingSuggestions,
+        aiSuggestionFrameByNode: remainingFrames,
+        aiSuggestionSourceByNode: remainingSources,
+        aiSuggestionStatusByNode: { ...state.aiSuggestionStatusByNode, [nodeId]: 'idle' },
+      };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
+    }),
+  startBulkAi: (total) =>
+    set((state) => {
+      const next = { bulkAiProgress: { total, completed: 0, running: true, cancelled: false } };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
+    }),
+  updateBulkAiProgress: (completed) =>
+    set((state) => {
+      const next = { bulkAiProgress: { ...state.bulkAiProgress, completed } };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
+    }),
+  finishBulkAi: () =>
+    set((state) => {
+      const next = { bulkAiProgress: { ...state.bulkAiProgress, running: false } };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
+    }),
+  cancelBulkAi: () =>
+    set((state) => {
+      const next = { bulkAiProgress: { ...state.bulkAiProgress, cancelled: true, running: false } };
+      const videoId = state.currentVideo?.video_id;
+      if (videoId) {
+        persistAiSnapshot(videoId, buildAiSnapshot(state, next));
+      }
+      return next;
+    }),
+  resetBulkAi: () =>
+    set({
+      bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+    }),
+
+  hydrateAiSuggestions: (videoId) =>
+    set(() => {
+      if (!videoId || typeof localStorage === 'undefined') {
+        return {
+          aiSuggestionsByNode: {},
+          aiSuggestionStatusByNode: {},
+          aiSuggestionFrameByNode: {},
+          aiSuggestionSourceByNode: {},
+          bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+        };
+      }
+      try {
+        const raw = localStorage.getItem(`ai_suggestions:${videoId}`);
+        if (!raw) {
+          return {
+            aiSuggestionsByNode: {},
+            aiSuggestionStatusByNode: {},
+            aiSuggestionFrameByNode: {},
+            aiSuggestionSourceByNode: {},
+            bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+          };
+        }
+        const parsed = JSON.parse(raw);
+        if (parsed?.version !== AI_SUGGESTION_STORAGE_VERSION) {
+          return {
+            aiSuggestionsByNode: {},
+            aiSuggestionStatusByNode: {},
+            aiSuggestionFrameByNode: {},
+            aiSuggestionSourceByNode: {},
+            bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+          };
+        }
+        const storedProgress = parsed.bulkAiProgress;
+        const bulkAiProgress = storedProgress && typeof storedProgress.total === 'number'
+          ? {
+              total: storedProgress.total,
+              completed: storedProgress.completed ?? 0,
+              running: false,
+              cancelled: false,
+            }
+          : { total: 0, completed: 0, running: false, cancelled: false };
+        return {
+          aiSuggestionsByNode: parsed.aiSuggestionsByNode || {},
+          aiSuggestionStatusByNode: parsed.aiSuggestionStatusByNode || {},
+          aiSuggestionFrameByNode: parsed.aiSuggestionFrameByNode || {},
+          aiSuggestionSourceByNode: parsed.aiSuggestionSourceByNode || {},
+          bulkAiProgress,
+        };
+      } catch {
+        return {
+          aiSuggestionsByNode: {},
+          aiSuggestionStatusByNode: {},
+          aiSuggestionFrameByNode: {},
+          aiSuggestionSourceByNode: {},
+          bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+        };
+      }
+    }),
+
+  clearAiSuggestions: () =>
+    set((state) => {
+      const videoId = state.currentVideo?.video_id;
+      if (videoId && typeof localStorage !== 'undefined') {
+        localStorage.removeItem(`ai_suggestions:${videoId}`);
+      }
+      return {
+        aiSuggestionsByNode: {},
+        aiSuggestionStatusByNode: {},
+        aiSuggestionFrameByNode: {},
+        aiSuggestionSourceByNode: {},
+        bulkAiProgress: { total: 0, completed: 0, running: false, cancelled: false },
+      };
+    }),
 }));
 
 // Selectors
@@ -262,4 +621,25 @@ export const useCurrentUser = () => useAppStore((state) => state.currentUser);
 export const useSourceNodes = () => useAppStore((state) => state.sourceNodes);
 export const useTargetNodes = () => useAppStore((state) => state.targetNodes);
 export const useEdgeDragState = () => useAppStore((state) => state.edgeDragState);
+export const usePendingEdgeEdit = () => useAppStore((state) => state.pendingEdgeEdit);
+export const useTrackletFocusRequest = () => useAppStore((state) => state.trackletFocusRequest);
 export const useEdgeCreation = () => useAppStore((state) => state.edgeCreation);
+export const useAiSuggestionsByNode = () => useAppStore((state) => state.aiSuggestionsByNode);
+export const useAiSuggestionStatusByNode = () => useAppStore((state) => state.aiSuggestionStatusByNode);
+export const useAiSuggestionFrameByNode = () => useAppStore((state) => state.aiSuggestionFrameByNode);
+export const useAiSuggestionSourceByNode = () => useAppStore((state) => state.aiSuggestionSourceByNode);
+export const useBulkAiProgress = () => useAppStore((state) => state.bulkAiProgress);
+export const useAiProvider = () => useAppStore((state) => state.aiProvider);
+export const useSetAiProvider = () => useAppStore((state) => state.setAiProvider);
+export const useResetBulkAi = () => useAppStore((state) => state.resetBulkAi);
+export const useHydrateAiSuggestions = () => useAppStore((state) => state.hydrateAiSuggestions);
+export const useClearAiSuggestions = () => useAppStore((state) => state.clearAiSuggestions);
+
+// BBox overlay selector
+export const useBboxesVisible = () => useAppStore((state) => state.bboxesVisible);
+
+// Mask overlay selectors
+export const useMasksVisible = () => useAppStore((state) => state.masksVisible);
+export const useMaskOpacity = () => useAppStore((state) => state.maskOpacity);
+export const useSelectedMaskObject = () => useAppStore((state) => state.selectedMaskObject);
+export const useHiddenMaskObjects = () => useAppStore((state) => state.hiddenMaskObjects);

@@ -1,9 +1,10 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Routes, Route, Link, useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { useAppStore, useFilters, useCurrentUser, useSelectedNode, useSelectedEdge, useAnnotationMode } from './store';
-import { usersApi } from './services/api';
-import { useVideos, useVideo, useNodes, useEdges } from './hooks';
+import { useAppStore, useFilters, useCurrentUser, useSelectedNode, useSelectedEdge, useAnnotationMode, useBulkAiProgress, useAiProvider, useSetAiProvider, useResetBulkAi, useHydrateAiSuggestions, useClearAiSuggestions } from './store';
+import { usersApi, videosApi } from './services/api';
+import { masksApi } from './services/segmentationApi';
+import { useVideos, useVideo, useNodes, useEdges, useReextractJobs } from './hooks';
 import { VideoPlayer } from './components/VideoPlayer';
 import { TrackletTimeline } from './components/TrackletTimeline';
 import { EdgeTimeline } from './components/EdgeTimeline';
@@ -16,9 +17,74 @@ import { ImportButton } from './components/Import';
 import { SaveButton } from './components/Save';
 import clsx from 'clsx';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
+import { aiApi } from './services/ai';
+import type { Node, MaskMetadata } from './types';
+
+function isBackendUnavailableError(error: unknown): boolean {
+  const msg = ((error as Error | undefined)?.message || '').toLowerCase();
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('load failed') ||
+    msg.includes('econnrefused') ||
+    msg.includes('fetch')
+  );
+}
+
+/** Source-domain tag for grouping videos into self-contained collections.
+ *
+ * The backend stamps `Video.dataset` from the sample directory's
+ * `<source>__<id>` prefix at import time, so each source collection
+ * (Kitti_v2, Sav2_V4, vidor_v2, …) round-trips as a single tag value.
+ * The legacy fallback parses the video_id for older imports that pre-date
+ * the tag.
+ */
+function getVideoSource(video: { video_id: string; dataset?: string | null }): string {
+  if (video.dataset) return video.dataset;
+  const id = video.video_id;
+  const sep = id.indexOf('__');
+  if (sep > 0) return id.slice(0, sep);
+  return id.split('_')[0] || 'unknown';
+}
 
 function VideoList() {
-  const { data: videos, isLoading, error } = useVideos();
+  const { data: videos, isLoading, error, refetch } = useVideos();
+  const [reloading, setReloading] = useState(false);
+  const [reloadResult, setReloadResult] = useState<{ imported: string[]; total_on_disk: number } | null>(null);
+  const sourceFilter = useAppStore((state) => state.sourceFilter);
+  const setSourceFilter = useAppStore((state) => state.setSourceFilter);
+
+  const handleReload = async () => {
+    setReloading(true);
+    setReloadResult(null);
+    try {
+      const result = await videosApi.reload();
+      setReloadResult({ imported: result.imported, total_on_disk: result.total_on_disk });
+      await refetch();
+    } catch (err) {
+      console.error('Reload failed:', err);
+    } finally {
+      setReloading(false);
+    }
+  };
+
+  // Hooks must be called before any early returns (React rules of hooks)
+  const availableSources = useMemo(() => {
+    if (!videos) return [];
+    const counts = new Map<string, number>();
+    for (const v of videos) {
+      const src = getVideoSource(v);
+      counts.set(src, (counts.get(src) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([source, count]) => ({ source, count }));
+  }, [videos]);
+
+  const filteredVideos = useMemo(() => {
+    if (!videos || sourceFilter === 'all') return videos || [];
+    return videos.filter(v => getVideoSource(v) === sourceFilter);
+  }, [videos, sourceFilter]);
 
   if (isLoading) {
     return (
@@ -40,19 +106,74 @@ function VideoList() {
     return (
       <div className="flex flex-col items-center justify-center h-64">
         <div className="text-gray-400 mb-4">No videos imported yet.</div>
-        <div className="text-gray-500 text-sm">
-          Run <code className="bg-gray-800 px-2 py-1 rounded">python scripts/import_vsg.py</code> to import videos.
-        </div>
+        <button
+          onClick={handleReload}
+          disabled={reloading}
+          className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white px-4 py-2 rounded text-sm font-medium"
+        >
+          {reloading ? 'Scanning...' : 'Scan Data Source'}
+        </button>
       </div>
     );
   }
 
   return (
     <div className="p-6">
-      <h1 className="text-2xl font-bold text-white mb-6">Video Scene Graph Annotation</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-white">Video Scene Graph Annotation</h1>
+        <div className="flex items-center gap-3">
+          {reloadResult && reloadResult.imported.length > 0 && (
+            <span className="text-green-400 text-sm">
+              +{reloadResult.imported.length} new video{reloadResult.imported.length !== 1 ? 's' : ''} imported
+            </span>
+          )}
+          {reloadResult && reloadResult.imported.length === 0 && (
+            <span className="text-gray-400 text-sm">No new videos found</span>
+          )}
+          <button
+            onClick={handleReload}
+            disabled={reloading}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white px-3 py-1.5 rounded text-sm font-medium transition-colors"
+          >
+            <svg className={`w-4 h-4 ${reloading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            {reloading ? 'Scanning...' : 'Reload Data Source'}
+          </button>
+        </div>
+      </div>
+
+      {/* Source filter */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <button
+          onClick={() => setSourceFilter('all')}
+          className={clsx(
+            'px-3 py-1 rounded-full text-sm font-medium transition-colors',
+            sourceFilter === 'all'
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          )}
+        >
+          All ({videos?.length || 0})
+        </button>
+        {availableSources.map(({ source, count }) => (
+          <button
+            key={source}
+            onClick={() => setSourceFilter(source)}
+            className={clsx(
+              'px-3 py-1 rounded-full text-sm font-medium transition-colors',
+              sourceFilter === source
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            )}
+          >
+            {source} ({count})
+          </button>
+        ))}
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {videos.map((video) => (
+        {filteredVideos.map((video) => (
           <Link
             key={video.id}
             to={`/video/${video.video_id}`}
@@ -60,7 +181,11 @@ function VideoList() {
           >
             <div className="text-white font-semibold mb-2">{video.video_id}</div>
             {video.dataset && (
-              <div className="text-gray-400 text-sm mb-2">Dataset: {video.dataset}</div>
+              <div className="mb-2">
+                <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-500/20 text-indigo-300">
+                  {video.dataset}
+                </span>
+              </div>
             )}
             <div className="flex items-center gap-4 text-sm">
               <div className="text-gray-400">
@@ -95,7 +220,7 @@ function VideoList() {
 
 // Annotation mode toggle component
 function AnnotationModeToggle() {
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(false);
   const annotationMode = useAnnotationMode();
   const setAnnotationMode = useAppStore((state) => state.setAnnotationMode);
   const selectedNode = useSelectedNode();
@@ -114,14 +239,14 @@ function AnnotationModeToggle() {
   };
 
   return (
-    <div className="bg-gray-800 rounded-lg p-3">
+    <div className="bg-gray-800 rounded-lg p-2">
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center justify-between"
       >
         <div className="flex items-center gap-2">
           <svg
-            className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+            className={`w-3.5 h-3.5 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -148,7 +273,7 @@ function AnnotationModeToggle() {
           <button
             onClick={() => handleModeChange('nodes')}
             className={clsx(
-              'flex-1 py-2 px-3 rounded text-sm font-medium transition-colors',
+              'flex-1 py-1.5 px-2 rounded text-xs font-medium transition-colors',
               annotationMode === 'nodes'
                 ? 'bg-green-600 text-white'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
@@ -159,7 +284,7 @@ function AnnotationModeToggle() {
           <button
             onClick={() => handleModeChange('edges')}
             className={clsx(
-              'flex-1 py-2 px-3 rounded text-sm font-medium transition-colors',
+              'flex-1 py-1.5 px-2 rounded text-xs font-medium transition-colors',
               annotationMode === 'edges'
                 ? 'bg-orange-600 text-white'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
@@ -185,11 +310,40 @@ function VideoAnnotation() {
   const selectedNode = useSelectedNode();
   const selectedEdge = useSelectedEdge();
   const annotationMode = useAnnotationMode();
+  const setAiSuggestion = useAppStore((state) => state.setAiSuggestion);
+  const setAiSuggestionStatus = useAppStore((state) => state.setAiSuggestionStatus);
+  const startBulkAi = useAppStore((state) => state.startBulkAi);
+  const updateBulkAiProgress = useAppStore((state) => state.updateBulkAiProgress);
+  const finishBulkAi = useAppStore((state) => state.finishBulkAi);
+  const cancelBulkAi = useAppStore((state) => state.cancelBulkAi);
+  const bulkAiProgress = useBulkAiProgress();
+  const bulkRunIdRef = useRef(0);
+  const aiProvider = useAiProvider();
+  const setAiProvider = useSetAiProvider();
+  const resetBulkAi = useResetBulkAi();
+  const hydrateAiSuggestions = useHydrateAiSuggestions();
+  const clearAiSuggestions = useClearAiSuggestions();
+  const [showBulkReviewPrompt, setShowBulkReviewPrompt] = useState(false);
 
   const [showMetadata, setShowMetadata] = useState(false);
 
+  // Mask state
+  const [maskMetadata, setMaskMetadata] = useState<MaskMetadata | null>(null);
+  const masksVisible = useAppStore((state) => state.masksVisible);
+  const setMasksVisible = useAppStore((state) => state.setMasksVisible);
+
+  // BBox overlay state
+  const bboxesVisible = useAppStore((state) => state.bboxesVisible);
+  const setBboxesVisible = useAppStore((state) => state.setBboxesVisible);
+
+  // Fetch mask metadata when video loads
+  useEffect(() => {
+    if (!videoId) return;
+    masksApi.getMetadata(videoId).then(setMaskMetadata).catch(() => setMaskMetadata(null));
+  }, [videoId]);
+
   // Resizable right panel state
-  const [rightPanelWidth, setRightPanelWidth] = useState(384); // default w-96
+  const [rightPanelWidth, setRightPanelWidth] = useState(480);
   const isResizing = useRef(false);
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
@@ -205,8 +359,8 @@ function VideoAnnotation() {
 
       // Calculate new width based on mouse position from right edge
       const newWidth = window.innerWidth - e.clientX - 16; // 16px for padding
-      // Clamp between min (300) and max (600)
-      setRightPanelWidth(Math.min(600, Math.max(300, newWidth)));
+      // Clamp between min (300) and max (800)
+      setRightPanelWidth(Math.min(800, Math.max(300, newWidth)));
     };
 
     const handleMouseUp = () => {
@@ -226,14 +380,44 @@ function VideoAnnotation() {
     };
   }, []);
 
-  const { data: video, isLoading: videoLoading, error: videoError } = useVideo(videoId);
+  const {
+    data: video,
+    isLoading: videoLoading,
+    isFetching: videoFetching,
+    error: videoError,
+    refetch: refetchVideo,
+  } = useVideo(videoId);
+  const [videoStatus, setVideoStatus] = useState<string>('pending');
   const { data: nodesData } = useNodes(videoId);
   const { data: edgesData } = useEdges(videoId, filters);
+  // Mount the reextract-jobs poller here so it runs for every video the
+  // user opens. The hook self-gates refetch-interval and invalidates
+  // `edges` queries as jobs complete.
+  useReextractJobs(videoId);
 
   // Update store when data changes
   useEffect(() => {
     if (video) setCurrentVideo(video);
   }, [video, setCurrentVideo]);
+
+  useEffect(() => {
+    if (video?.status) {
+      setVideoStatus(video.status);
+    }
+  }, [video?.status]);
+
+  useEffect(() => {
+    resetBulkAi();
+    setShowBulkReviewPrompt(false);
+  }, [videoId, resetBulkAi]);
+
+  useEffect(() => {
+    if (videoId) {
+      hydrateAiSuggestions(videoId);
+    } else {
+      clearAiSuggestions();
+    }
+  }, [videoId, hydrateAiSuggestions, clearAiSuggestions]);
 
   useEffect(() => {
     if (nodesData) setNodes(nodesData);
@@ -255,10 +439,149 @@ function VideoAnnotation() {
     }
   }, [edgesData, setEdges]);
 
+  const getLargestBBoxFrame = useCallback((node: Node): number | null => {
+    const entries = Object.entries(node.bboxes_by_frame || {});
+    if (entries.length === 0) {
+      return null;
+    }
+
+    let bestFrame: number | null = null;
+    let bestArea = -1;
+
+    for (const [frameStr, bbox] of entries) {
+      const frameIdx = Number(frameStr);
+      if (Number.isNaN(frameIdx)) continue;
+      const area = bbox.width * bbox.height;
+      if (area > bestArea || (area === bestArea && (bestFrame === null || frameIdx < bestFrame))) {
+        bestArea = area;
+        bestFrame = frameIdx;
+      }
+    }
+
+    return bestFrame;
+  }, []);
+
+  const handleBulkAISuggestions = useCallback(async () => {
+    if (!video || nodes.length === 0 || bulkAiProgress.running) return;
+    bulkRunIdRef.current += 1;
+    const runId = bulkRunIdRef.current;
+    startBulkAi(nodes.length);
+    let completed = 0;
+
+    for (const node of nodes) {
+      const state = useAppStore.getState();
+      if (state.bulkAiProgress.cancelled || bulkRunIdRef.current !== runId) {
+        break;
+      }
+
+      const frameIdx = getLargestBBoxFrame(node);
+      if (frameIdx === null) {
+        setAiSuggestionStatus(node.node_id, 'error');
+        completed += 1;
+        updateBulkAiProgress(completed);
+        continue;
+      }
+
+      setAiSuggestionStatus(node.node_id, 'pending');
+      try {
+        const provider = useAppStore.getState().aiProvider;
+        const result = await aiApi.suggestAttributes({
+          video_id: video.video_id,
+          node_id: node.node_id,
+          frame_idx: frameIdx,
+          debug: false,
+          provider,
+        });
+        if (!result.error) {
+          setAiSuggestion(node.node_id, result, frameIdx, 'bulk');
+          setAiSuggestionStatus(node.node_id, 'done');
+        } else {
+          setAiSuggestionStatus(node.node_id, 'error');
+        }
+      } catch (error) {
+        setAiSuggestionStatus(node.node_id, 'error');
+      }
+
+      completed += 1;
+      updateBulkAiProgress(completed);
+    }
+
+    if (!useAppStore.getState().bulkAiProgress.cancelled && bulkRunIdRef.current === runId) {
+      finishBulkAi();
+      setShowBulkReviewPrompt(true);
+    }
+  }, [
+    video,
+    nodes,
+    bulkAiProgress.running,
+    getLargestBBoxFrame,
+    startBulkAi,
+    updateBulkAiProgress,
+    finishBulkAi,
+    setAiSuggestion,
+    setAiSuggestionStatus,
+  ]);
+
+  const handleCancelBulk = useCallback(() => {
+    bulkRunIdRef.current += 1;
+    cancelBulkAi();
+    setShowBulkReviewPrompt(false);
+  }, [cancelBulkAi]);
+
+  const handleStatusChange = async (newStatus: string) => {
+    if (!video) return;
+    try {
+      const result = await videosApi.updateStatus(video.video_id, newStatus);
+      setVideoStatus(result.status);
+    } catch (error) {
+      console.error('Failed to update video status:', error);
+    }
+  };
+
+  useEffect(() => {
+    if (bulkAiProgress.running) {
+      setShowBulkReviewPrompt(false);
+    }
+  }, [bulkAiProgress.running]);
+
+  const backendStarting = !!videoError && !video && isBackendUnavailableError(videoError);
+
+  useEffect(() => {
+    if (!backendStarting) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      refetchVideo();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [backendStarting, refetchVideo]);
+
   if (videoLoading) {
     return (
       <div className="flex items-center justify-center h-screen">
         <div className="text-gray-400">Loading video...</div>
+      </div>
+    );
+  }
+
+  if (backendStarting) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen gap-3">
+        <svg className="animate-spin h-8 w-8 text-blue-400" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        <div className="text-gray-200 font-medium">Backend is starting</div>
+        <div className="text-gray-400 text-sm">
+          Waiting for API connection and retrying automatically...
+        </div>
+        <button
+          onClick={() => refetchVideo()}
+          disabled={videoFetching}
+          className="mt-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white px-3 py-1.5 rounded text-sm"
+        >
+          {videoFetching ? 'Retrying...' : 'Retry now'}
+        </button>
       </div>
     );
   }
@@ -293,9 +616,98 @@ function VideoAnnotation() {
           )}
         </div>
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => setBboxesVisible(!bboxesVisible)}
+            className={clsx(
+              'px-3 py-1.5 text-sm font-medium rounded border transition-colors',
+              bboxesVisible
+                ? 'bg-green-600 border-green-400 text-white'
+                : 'bg-gray-700 border-gray-500 text-gray-300 hover:bg-gray-600'
+            )}
+          >
+            {bboxesVisible ? 'BBoxes ON' : 'BBoxes OFF'}
+          </button>
+          {maskMetadata?.has_masks && (
+            <button
+              onClick={() => setMasksVisible(!masksVisible)}
+              className={clsx(
+                'px-3 py-1.5 text-sm font-medium rounded border transition-colors',
+                masksVisible
+                  ? 'bg-green-600 border-green-400 text-white'
+                  : 'bg-gray-700 border-gray-500 text-gray-300 hover:bg-gray-600'
+              )}
+            >
+              {masksVisible ? 'Masks ON' : 'Masks OFF'}
+            </button>
+          )}
+          <select
+            value={aiProvider}
+            onChange={(e) => setAiProvider(e.target.value as 'openai' | 'gemini')}
+            className="bg-gray-700 text-white rounded px-2 py-1 text-sm border border-gray-600"
+          >
+            <option value="openai">GPT 5.4 Mini</option>
+            <option value="gemini">Gemini 3 Flash</option>
+          </select>
+          <button
+            onClick={bulkAiProgress.running ? handleCancelBulk : handleBulkAISuggestions}
+            disabled={(!video || nodes.length === 0) && !bulkAiProgress.running}
+            className={clsx(
+              'px-3 py-1.5 text-white text-sm font-semibold rounded border shadow-md transition-all',
+              bulkAiProgress.running
+                ? 'bg-gray-700 border-gray-500 hover:bg-gray-600'
+                : 'bg-purple-600 hover:bg-purple-700 border-purple-400 hover:shadow-lg',
+              (!video || nodes.length === 0) && !bulkAiProgress.running && 'bg-purple-800 border-purple-700 cursor-not-allowed'
+            )}
+          >
+            {bulkAiProgress.running ? 'Cancel AI Suggestions' : 'AI Suggest All Nodes'}
+          </button>
+          {(bulkAiProgress.running || bulkAiProgress.completed > 0) && (
+            <div className="flex items-center gap-2">
+              <div className="w-24 h-2 bg-gray-700 rounded">
+                <div
+                  className="h-2 bg-purple-400 rounded"
+                  style={{
+                    width: bulkAiProgress.total > 0
+                      ? `${Math.min(100, (bulkAiProgress.completed / bulkAiProgress.total) * 100)}%`
+                      : '0%',
+                  }}
+                />
+              </div>
+              <span className="text-xs text-gray-300">
+                {bulkAiProgress.completed}/{bulkAiProgress.total}
+              </span>
+            </div>
+          )}
+          {showBulkReviewPrompt && (
+            <div className="flex items-center gap-2 bg-green-600/20 border border-green-600/40 text-green-200 text-xs px-2 py-1 rounded">
+              AI suggestions finished — review nodes and accept/modify annotations.
+              <button
+                onClick={() => setShowBulkReviewPrompt(false)}
+                className="text-green-100 hover:text-white"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           <ImportButton videoId={video.video_id} />
           <SaveButton videoId={video.video_id} />
           <ExportButton videoId={video.video_id} />
+          <select
+            value={videoStatus}
+            onChange={(e) => handleStatusChange(e.target.value)}
+            className={clsx(
+              'rounded px-2 py-1 text-sm border',
+              videoStatus === 'completed'
+                ? 'bg-green-600/20 text-green-200 border-green-600/40'
+                : videoStatus === 'in_progress'
+                ? 'bg-yellow-600/20 text-yellow-200 border-yellow-600/40'
+                : 'bg-gray-700 text-gray-200 border-gray-600'
+            )}
+          >
+            <option value="pending">pending</option>
+            <option value="in_progress">in_progress</option>
+            <option value="completed">completed</option>
+          </select>
           <UserSelector />
         </div>
       </header>
@@ -321,6 +733,7 @@ function VideoAnnotation() {
                   fps={video.fps || 5}
                   resolution={video.resolution || { width: 1920, height: 1080 }}
                   nodes={nodes}
+                  maskMetadata={maskMetadata}
                 />
               </div>
             </Panel>

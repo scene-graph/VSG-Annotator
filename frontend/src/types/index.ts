@@ -25,8 +25,9 @@ export interface NodeVisualAttributes {
 }
 
 export interface NodePhysicalAttributes {
-  size: string;
-  shape: string;
+  size?: string;
+  shape?: string;
+  age?: string;
 }
 
 export interface NodeAttributes {
@@ -41,6 +42,12 @@ export interface Node {
   is_static: boolean;
   attributes: NodeAttributes;
   bboxes_by_frame: Record<string, BBox>;
+  has_revision?: boolean;
+  revision_action?: string;
+  // Present only when a revision has flipped is_static away from the
+  // VSG-original value. node_id itself is immutable, so the UI uses
+  // this to show a "(now static)"/"(now dynamic)" notice.
+  original_is_static?: boolean | null;
 }
 
 // Edge types
@@ -62,9 +69,16 @@ export interface Edge {
   validation_reasoning_round1: string;
   validation_reasoning_round2: string;
   time_period: TimePeriod;
+  time_periods?: TimePeriod[];
   attributes?: MotionAttributes;
   has_revision?: boolean;
   revision_action?: string;
+  // Members that the group-edge cleanup removed after a node type flip.
+  // Non-empty only when the backend pruned sources/targets during
+  // reclassification. The UI keeps those edges visible in the flipped
+  // node's Related Edges list with a removal marker.
+  pruned_sources?: string[];
+  pruned_targets?: string[];
 }
 
 // Video types
@@ -98,6 +112,12 @@ export interface AnnotationAccept {
   edge_id: string;
   edge_type: EdgeType;
   user_id: number;
+  new_predicate?: string;
+  new_time_period?: TimePeriod;
+  new_time_periods?: TimePeriod[];
+  new_attributes?: MotionAttributes;
+  new_source?: string | string[];
+  new_target?: string | string[];
   notes?: string;
 }
 
@@ -116,6 +136,7 @@ export interface AnnotationModify {
   user_id: number;
   new_predicate?: string;
   new_time_period?: TimePeriod;
+  new_time_periods?: TimePeriod[];
   new_attributes?: MotionAttributes;
   new_source?: string | string[];
   new_target?: string | string[];
@@ -130,6 +151,7 @@ export interface AnnotationCreate {
   target: string | string[];
   predicate: string;
   time_period: TimePeriod;
+  time_periods?: TimePeriod[];
   attributes?: MotionAttributes;
   notes?: string;
 }
@@ -146,6 +168,8 @@ export interface Revision {
   new_predicate?: string;
   original_time_period?: TimePeriod;
   new_time_period?: TimePeriod;
+  original_time_periods?: TimePeriod[];
+  new_time_periods?: TimePeriod[];
   original_attributes?: MotionAttributes;
   new_attributes?: MotionAttributes;
   review_notes?: string;
@@ -239,6 +263,27 @@ export interface MetadataRevision {
   created_at: string;
 }
 
+// Annotation mode
+export type AnnotationMode = 'nodes' | 'edges' | 'segmentation';
+
+// Mask types
+export interface MaskObject {
+  object_id: number | string;
+  node_id: string;
+  category: string;
+  is_static: boolean;
+  color_hex: string;
+}
+
+export interface MaskMetadata {
+  has_masks: boolean;
+  objects: MaskObject[];
+  total_frames: number;
+  palette: Record<string, string>;
+  mask_format?: 'palette' | 'composite';
+  available_frames?: number[];
+}
+
 // Node modification types
 export interface NodeModify {
   video_id: string;
@@ -246,6 +291,8 @@ export interface NodeModify {
   user_id: number;
   new_visual_attributes?: NodeVisualAttributes;
   new_physical_attributes?: NodePhysicalAttributes;
+  new_is_static?: boolean;
+  new_category?: string;
   notes?: string;
 }
 

@@ -1,9 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import type { Node, Edge, NodeVisualAttributes, NodePhysicalAttributes } from '../../types';
-import { useAppStore, useSelectedNode, useEdges, useCurrentUser, useNodes } from '../../store';
-import { useModifyNode } from '../../hooks/useVideo';
+import { useAppStore, useSelectedNode, useEdges, useCurrentUser, useNodes, useAiSuggestionFrameByNode, useAiSuggestionStatusByNode } from '../../store';
+import { useModifyNode, useReextractJobs } from '../../hooks/useVideo';
 import { NodeEditor } from './NodeEditor';
+import { getEdgeStartFrame } from '../../utils/edgeFrame';
 import clsx from 'clsx';
+
+const PERSON_CATEGORIES = new Set(['person', 'adult', 'child', 'baby']);
 
 interface NodeReviewProps {
   videoId: string;
@@ -28,8 +31,39 @@ const COLORS = {
   selected: '#22c55e', // Green for selected
 };
 
+// Visual state for a reextract job shown in the related-edges list.
+function ReextractStateTag({ status }: { status: 'pending' | 'running' | 'done' | 'failed' }) {
+  if (status === 'pending' || status === 'running') {
+    return (
+      <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-200">
+        <svg className="animate-spin h-2.5 w-2.5" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        re-extracting
+      </span>
+    );
+  }
+  if (status === 'done') {
+    return (
+      <span className="px-1.5 py-0.5 rounded text-[10px] bg-green-500/20 text-green-300">re-extracted</span>
+    );
+  }
+  return (
+    <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-300">re-extract failed</span>
+  );
+}
+
 export function NodeReview({ videoId }: NodeReviewProps) {
   const selectedNode = useSelectedNode();
+  const { data: allJobs } = useReextractJobs(videoId);
+  const jobByEdgeId = useMemo(() => {
+    const map = new Map<string, 'pending' | 'running' | 'done' | 'failed'>();
+    for (const j of allJobs ?? []) {
+      if (!map.has(j.edge_id)) map.set(j.edge_id, j.status);
+    }
+    return map;
+  }, [allJobs]);
   const setSelectedNode = useAppStore((state) => state.setSelectedNode);
   const setSelectedEdge = useAppStore((state) => state.setSelectedEdge);
   const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
@@ -37,25 +71,62 @@ export function NodeReview({ videoId }: NodeReviewProps) {
   const nodes = useNodes();
   const setNodes = useAppStore((state) => state.setNodes);
   const currentUser = useCurrentUser();
+  const currentFrame = useAppStore((state) => state.currentFrame);
+  const aiSuggestionFrameByNode = useAiSuggestionFrameByNode();
+  const aiSuggestionStatusByNode = useAiSuggestionStatusByNode();
 
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(true);
   const modifyMutation = useModifyNode();
 
-  // Find related edges where this node is source OR target
+  // Find related edges where this node is source OR target. Also include
+  // edges where the node was pruned from membership by the group cleanup
+  // after a static/dynamic flip — those aren't "current" members but the
+  // user still wants to see them for traceability.
   const relatedEdges = useMemo(() => {
     if (!selectedNode) return [];
 
     return edges.filter((edge) => {
       const sources = Array.isArray(edge.source) ? edge.source : [edge.source];
       const targets = Array.isArray(edge.target) ? edge.target : [edge.target];
-      return sources.includes(selectedNode.node_id) || targets.includes(selectedNode.node_id);
+      if (sources.includes(selectedNode.node_id) || targets.includes(selectedNode.node_id)) {
+        return true;
+      }
+      const prunedSrc = edge.pruned_sources ?? [];
+      const prunedTgt = edge.pruned_targets ?? [];
+      return prunedSrc.includes(selectedNode.node_id) || prunedTgt.includes(selectedNode.node_id);
     });
   }, [selectedNode, edges]);
+
+  const isNodePrunedFromEdge = (edge: Edge): boolean => {
+    if (!selectedNode) return false;
+    const prunedSrc = edge.pruned_sources ?? [];
+    const prunedTgt = edge.pruned_targets ?? [];
+    return prunedSrc.includes(selectedNode.node_id) || prunedTgt.includes(selectedNode.node_id);
+  };
+
+  const [lastAutoJumpNodeId, setLastAutoJumpNodeId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedNode) return;
+    const selectedFrame = aiSuggestionFrameByNode[selectedNode.node_id];
+    if (selectedFrame !== undefined && lastAutoJumpNodeId !== selectedNode.node_id) {
+      setCurrentFrame(selectedFrame);
+      setLastAutoJumpNodeId(selectedNode.node_id);
+    }
+  }, [selectedNode, aiSuggestionFrameByNode, lastAutoJumpNodeId, setCurrentFrame]);
+
+  useEffect(() => {
+    if (selectedNode) {
+      setIsEditing(true);
+    }
+  }, [selectedNode]);
 
   // Handle saving node attribute changes
   const handleSaveChanges = async (changes: {
     visual?: NodeVisualAttributes;
     physical?: NodePhysicalAttributes;
+    is_static?: boolean;
+    category?: string;
   }) => {
     if (!currentUser || !selectedNode) return;
 
@@ -66,15 +137,29 @@ export function NodeReview({ videoId }: NodeReviewProps) {
         user_id: currentUser.id,
         new_visual_attributes: changes.visual,
         new_physical_attributes: changes.physical,
+        new_is_static: changes.is_static,
+        new_category: changes.category,
       });
 
       // Optimistic update: update the node in the store
+      const nextIsStatic = changes.is_static ?? selectedNode.is_static;
+      // Carry the VSG-original is_static through so the "type changed"
+      // badge is visible immediately after save, without waiting for a
+      // refetch. If the user reverted the change, clear the marker.
+      const originalIsStatic =
+        selectedNode.original_is_static ?? selectedNode.is_static;
+      const typeChanged = nextIsStatic !== originalIsStatic;
       const updatedNode: Node = {
         ...selectedNode,
+        category: changes.category ?? selectedNode.category,
+        is_static: nextIsStatic,
         attributes: {
           visual: changes.visual || selectedNode.attributes.visual,
           physical: changes.physical || selectedNode.attributes.physical,
         },
+        has_revision: true,
+        revision_action: 'modify',
+        original_is_static: typeChanged ? originalIsStatic : null,
       };
 
       // Update nodes in store
@@ -89,8 +174,13 @@ export function NodeReview({ videoId }: NodeReviewProps) {
 
   if (!selectedNode) {
     return (
-      <div className="bg-gray-800 rounded-lg p-4 h-full flex items-center justify-center">
-        <p className="text-gray-400">Select a node to review</p>
+      <div className="bg-gray-800 rounded-lg p-4 h-full">
+        <div className="flex items-center justify-between mb-4">
+          <span className="text-white text-sm font-semibold">Nodes</span>
+        </div>
+        <div className="flex items-center justify-center h-full">
+          <p className="text-gray-400">Select a node to review</p>
+        </div>
       </div>
     );
   }
@@ -98,12 +188,20 @@ export function NodeReview({ videoId }: NodeReviewProps) {
   const range = getTrackletRange(selectedNode);
   const nodeTypeColor = selectedNode.is_static ? COLORS.static : COLORS.dynamic;
   const nodeTypeBgColor = selectedNode.is_static ? 'bg-gray-500' : 'bg-orange-500';
+  const isPerson = PERSON_CATEGORIES.has(selectedNode.category.toLowerCase());
+  const selectedNodeAiStatus = aiSuggestionStatusByNode[selectedNode.node_id] ?? 'idle';
+  // node_id is immutable even after a static/dynamic flip, so surface a
+  // small "(now static)"/"(now dynamic)" badge next to the id whenever a
+  // revision has changed the node type.
+  const nodeTypeFlipped =
+    selectedNode.original_is_static != null &&
+    selectedNode.original_is_static !== selectedNode.is_static;
 
-  // Handle clicking a related edge
+  // Jump to the start of the edge's annotated time period so the playhead
+  // lands at a predictable, user-tracked frame rather than inside the span.
   const handleEdgeClick = (edge: Edge) => {
     setSelectedEdge(edge);
-    // Jump to the start of the edge
-    setCurrentFrame(edge.time_period.start_frame);
+    setCurrentFrame(getEdgeStartFrame(edge));
   };
 
   // Determine role of selected node in an edge
@@ -126,6 +224,26 @@ export function NodeReview({ videoId }: NodeReviewProps) {
             {selectedNode.is_static ? 'static' : 'dynamic'}
           </span>
           <span className="text-white font-mono text-sm">{selectedNode.node_id}</span>
+          {nodeTypeFlipped && (
+            <span
+              className="px-1.5 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-300"
+              title={`Originally ${selectedNode.original_is_static ? 'static' : 'dynamic'}; changed via node-type edit. node_id is kept immutable.`}
+            >
+              now {selectedNode.is_static ? 'static' : 'dynamic'}
+            </span>
+          )}
+          {selectedNodeAiStatus !== 'idle' && (
+            <span
+              className={clsx(
+                'px-2 py-0.5 rounded text-xs',
+                selectedNodeAiStatus === 'done' && 'bg-green-500/20 text-green-300',
+                selectedNodeAiStatus === 'pending' && 'bg-yellow-500/20 text-yellow-300',
+                selectedNodeAiStatus === 'error' && 'bg-red-500/20 text-red-300'
+              )}
+            >
+              AI: {selectedNodeAiStatus}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {!isEditing && currentUser && (
@@ -188,7 +306,9 @@ export function NodeReview({ videoId }: NodeReviewProps) {
           <div className="bg-gray-700 rounded p-3">
             <div className="text-gray-400 text-xs uppercase mb-2">Edit Attributes</div>
             <NodeEditor
+              key={selectedNode.node_id}
               node={selectedNode}
+              videoId={videoId}
               onSave={handleSaveChanges}
               onCancel={() => setIsEditing(false)}
             />
@@ -201,17 +321,17 @@ export function NodeReview({ videoId }: NodeReviewProps) {
                 <div className="text-gray-400 text-xs uppercase mb-2">Visual Attributes</div>
                 <div className="flex flex-wrap gap-2">
                   {selectedNode.attributes.visual.color && (
-                    <span className="px-2 py-1 rounded bg-blue-500/20 text-blue-400 text-sm">
+                    <span className="px-2 py-1 rounded bg-blue-500/20 text-blue-300 text-base">
                       {selectedNode.attributes.visual.color}
                     </span>
                   )}
                   {selectedNode.attributes.visual.texture && (
-                    <span className="px-2 py-1 rounded bg-green-500/20 text-green-400 text-sm">
+                    <span className="px-2 py-1 rounded bg-green-500/20 text-green-300 text-base">
                       {selectedNode.attributes.visual.texture}
                     </span>
                   )}
                   {selectedNode.attributes.visual.material && (
-                    <span className="px-2 py-1 rounded bg-purple-500/20 text-purple-400 text-sm">
+                    <span className="px-2 py-1 rounded bg-purple-500/20 text-purple-300 text-base">
                       {selectedNode.attributes.visual.material}
                     </span>
                   )}
@@ -219,24 +339,32 @@ export function NodeReview({ videoId }: NodeReviewProps) {
               </div>
             )}
 
-            {/* Physical Attributes */}
-            {selectedNode.attributes?.physical && (
-              <div className="bg-gray-700 rounded p-3">
-                <div className="text-gray-400 text-xs uppercase mb-2">Physical Attributes</div>
-                <div className="flex flex-wrap gap-2">
+        {/* Physical Attributes */}
+        {selectedNode.attributes?.physical && (
+          <div className="bg-gray-700 rounded p-3">
+            <div className="text-gray-400 text-xs uppercase mb-2">Physical Attributes</div>
+            <div className="flex flex-wrap gap-2">
+              {isPerson ? (
+                <span className="px-2 py-1 rounded bg-yellow-500/20 text-yellow-300 text-base">
+                  {selectedNode.attributes.physical.age || 'unknown'}
+                </span>
+              ) : (
+                <>
                   {selectedNode.attributes.physical.size && (
-                    <span className="px-2 py-1 rounded bg-yellow-500/20 text-yellow-400 text-sm">
+                    <span className="px-2 py-1 rounded bg-yellow-500/20 text-yellow-300 text-base">
                       {selectedNode.attributes.physical.size}
                     </span>
                   )}
                   {selectedNode.attributes.physical.shape && (
-                    <span className="px-2 py-1 rounded bg-pink-500/20 text-pink-400 text-sm">
+                    <span className="px-2 py-1 rounded bg-pink-500/20 text-pink-300 text-base">
                       {selectedNode.attributes.physical.shape}
                     </span>
                   )}
-                </div>
-              </div>
-            )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
           </>
         )}
 
@@ -250,7 +378,8 @@ export function NodeReview({ videoId }: NodeReviewProps) {
           ) : (
             <div className="space-y-2 max-h-48 overflow-y-auto">
               {relatedEdges.map((edge) => {
-                const role = getNodeRole(edge);
+                const pruned = isNodePrunedFromEdge(edge);
+                const role = pruned ? 'source' : getNodeRole(edge);
                 const edgeTypeColor = edge.edge_type === 'static' ? 'bg-gray-500' :
                                       edge.edge_type === 'dynamic' ? 'bg-orange-500' : 'bg-purple-500';
                 const roleColor = role === 'source' ? '#00d4ff' :
@@ -270,19 +399,32 @@ export function NodeReview({ videoId }: NodeReviewProps) {
                     onClick={() => handleEdgeClick(edge)}
                     className="p-2 bg-gray-600 rounded cursor-pointer hover:bg-gray-500 transition-colors"
                   >
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className={clsx('px-1.5 py-0.5 rounded text-white text-xs', edgeTypeColor)}>
                         {edge.edge_type}
                       </span>
-                      <span
-                        className="px-1.5 py-0.5 rounded text-xs font-semibold"
-                        style={{
-                          backgroundColor: `${roleColor}20`,
-                          color: roleColor,
-                        }}
-                      >
-                        {role === 'both' ? 'BOTH' : role.toUpperCase()}
-                      </span>
+                      {!pruned && (
+                        <span
+                          className="px-1.5 py-0.5 rounded text-xs font-semibold"
+                          style={{
+                            backgroundColor: `${roleColor}20`,
+                            color: roleColor,
+                          }}
+                        >
+                          {role === 'both' ? 'BOTH' : role.toUpperCase()}
+                        </span>
+                      )}
+                      {pruned && (
+                        <span
+                          className="px-1.5 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-300"
+                          title="This node was removed from the edge's member list after flipping to the other type; the edge itself still exists with the remaining members."
+                        >
+                          removed after type flip
+                        </span>
+                      )}
+                      {jobByEdgeId.has(edge.edge_id) && (
+                        <ReextractStateTag status={jobByEdgeId.get(edge.edge_id)!} />
+                      )}
                     </div>
                     <div className="text-sm text-gray-200 flex items-center gap-1 flex-wrap">
                       <span style={{ color: '#00d4ff' }}>{sourceCategories.join(', ')}</span>
@@ -296,7 +438,12 @@ export function NodeReview({ videoId }: NodeReviewProps) {
                       <span style={{ color: '#ff00d4' }}>{targetCategories.join(', ')}</span>
                     </div>
                     <div className="text-xs text-gray-400 mt-1">
-                      Frames {edge.time_period.start_frame}-{edge.time_period.end_frame}
+                      Frames {(edge.time_periods && edge.time_periods.length > 0
+                        ? edge.time_periods
+                        : [edge.time_period]
+                      )
+                        .map((tp) => `${tp.start_frame}-${tp.end_frame}`)
+                        .join(', ')}
                     </div>
                   </div>
                 );

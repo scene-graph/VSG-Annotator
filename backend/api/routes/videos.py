@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
-from backend.core.vsg_loader import VSGLoader
+from backend.core.vsg_loader import VSGLoader, discover_samples
 from backend.models.database import MetadataRevision, Video, get_db
 from backend.models.schemas import (
     NodePhysicalAttributes,
@@ -100,7 +100,150 @@ def normalize_camera_motion(raw_data: Optional[dict[str, Any]]) -> Optional[dict
 
     return normalized
 
+def _auto_link_variant_frames(pvsg_mini_path: Path) -> None:
+    """Auto-create frames/masks symlinks for variant samples.
+
+    A variant sample has an outputs/video_scene_graph*.json but no frames/ dir.
+    We look for a base video that shares the prefix (e.g. epic_kitchen_P04_32
+    is the base for epic_kitchen_P04_32_v2_pro) and symlink its frames/masks.
+    """
+    if not pvsg_mini_path.exists():
+        return
+
+    # Collect dirs that already have frames (potential bases)
+    bases: dict[str, Path] = {}
+    variants_needing_frames: list[Path] = []
+
+    for d in pvsg_mini_path.iterdir():
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        has_vsg = (d / "outputs" / "video_scene_graph.json").exists() or list(
+            (d / "outputs").glob("video_scene_graph_*.json")
+        ) if (d / "outputs").exists() else False
+        if not has_vsg:
+            continue
+        if (d / "frames").exists():
+            bases[d.name] = d
+        else:
+            variants_needing_frames.append(d)
+
+    # Also check annotation sample_data for base frames
+    sample_data_dirs = [
+        Path("/u/jtu9/scratch/sgg/annotations/sample_data"),
+        Path("/u/jtu9/scratch/sgg/ai_pipeline/pvsg_annotated_40"),
+    ]
+    for sd in sample_data_dirs:
+        if sd.exists():
+            for d in sd.iterdir():
+                if d.is_dir() and (d / "frames").exists() and d.name not in bases:
+                    bases[d.name] = d
+
+    for variant_dir in variants_needing_frames:
+        name = variant_dir.name
+        # Find the longest base name that is a prefix of this variant
+        best_base = None
+        best_len = 0
+        for base_name, base_dir in bases.items():
+            if name.startswith(base_name) and len(base_name) > best_len:
+                best_base = base_dir
+                best_len = len(base_name)
+
+        if best_base is not None:
+            frames_src = best_base / "frames"
+            if frames_src.exists():
+                (variant_dir / "frames").symlink_to(frames_src)
+            masks_src = best_base / "masks"
+            if masks_src.exists() and not (variant_dir / "masks").exists():
+                (variant_dir / "masks").symlink_to(masks_src)
+
+
 router = APIRouter(prefix="/videos", tags=["videos"])
+
+
+@router.post("/reload")
+async def reload_datasource(db: AsyncSession = Depends(get_db)):
+    """Scan the data source directory and import any new videos.
+
+    Auto-creates frames/masks symlinks for variant samples (e.g.
+    epic_kitchen_P04_32_v2_pro) that share frames with a base video.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Auto-link frames for variant directories missing a frames/ dir
+    _auto_link_variant_frames(settings.pvsg_mini_path)
+
+    samples = discover_samples(settings.pvsg_mini_path)
+    imported = []
+    skipped = []
+
+    for sample in samples:
+        # Check if already in DB
+        result = await db.execute(
+            select(Video).where(Video.video_id == sample["video_id"])
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            skipped.append(sample["video_id"])
+            continue
+
+        # Load VSG to get metadata
+        try:
+            loader = VSGLoader(sample["vsg_path"])
+            metadata = loader.metadata
+            resolution = loader.resolution
+        except Exception as e:
+            logger.warning("Failed to load VSG for %s: %s", sample["video_id"], e)
+            continue
+
+        video = Video(
+            video_id=sample["video_id"],
+            vsg_path=sample["vsg_path"],
+            frames_path=sample["frames_path"],
+            masks_path=sample.get("masks_path"),
+            dataset=sample.get("source_tag") or metadata.get("dataset"),
+            status="pending",
+            total_frames=metadata.get("total_frames"),
+            fps=metadata.get("fps"),
+            resolution_width=resolution.get("width"),
+            resolution_height=resolution.get("height"),
+        )
+        db.add(video)
+        imported.append(sample["video_id"])
+
+    if imported:
+        await db.commit()
+
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "imported_count": len(imported),
+        "skipped_count": len(skipped),
+        "total_on_disk": len(samples),
+    }
+
+
+@router.patch("/{video_id}/status")
+async def update_video_status(
+    video_id: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update video status."""
+    status = payload.get("status")
+    if status not in {"pending", "in_progress", "completed"}:
+        raise HTTPException(status_code=400, detail="Invalid status value")
+
+    result = await db.execute(select(Video).where(Video.video_id == video_id))
+    video = result.scalar_one_or_none()
+    if video is None:
+        raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
+
+    video.status = status
+    db.add(video)
+    await db.commit()
+    await db.refresh(video)
+    return {"video_id": video.video_id, "status": video.status}
 
 
 @router.get("", response_model=list[VideoSummary])
@@ -312,10 +455,13 @@ async def get_nodes(
     from backend.core.revision_tracker import RevisionTracker
     tracker = RevisionTracker(db)
     for node in nodes:
+        original_is_static = node.is_static
         latest_rev = await tracker.get_latest_node_revision(video_id, node.node_id)
         if latest_rev:
             if latest_rev.new_is_static is not None:
                 node.is_static = latest_rev.new_is_static
+            if latest_rev.new_category is not None:
+                node.category = latest_rev.new_category
             if latest_rev.new_attributes:
                 visual = latest_rev.new_attributes.get("visual")
                 physical = latest_rev.new_attributes.get("physical")
@@ -323,6 +469,15 @@ async def get_nodes(
                     node.attributes.visual = NodeVisualAttributes(**visual)
                 if physical:
                     node.attributes.physical = NodePhysicalAttributes(**physical)
+                if physical and physical.get("age") is not None:
+                    node.attributes.physical.age = physical.get("age")
+            node.has_revision = True
+            node.revision_action = latest_rev.action
+        else:
+            node.has_revision = False
+            node.revision_action = None
+        if node.is_static != original_is_static:
+            node.original_is_static = original_is_static
 
     # Filter by static/dynamic
     if is_static is not None:
@@ -358,6 +513,32 @@ async def get_node(
 
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+
+    from backend.core.revision_tracker import RevisionTracker
+    tracker = RevisionTracker(db)
+    original_is_static = node.is_static
+    latest_rev = await tracker.get_latest_node_revision(video_id, node.node_id)
+    if latest_rev:
+        if latest_rev.new_is_static is not None:
+            node.is_static = latest_rev.new_is_static
+        if latest_rev.new_category is not None:
+            node.category = latest_rev.new_category
+        if latest_rev.new_attributes:
+            visual = latest_rev.new_attributes.get("visual")
+            physical = latest_rev.new_attributes.get("physical")
+            if visual:
+                node.attributes.visual = NodeVisualAttributes(**visual)
+            if physical:
+                node.attributes.physical = NodePhysicalAttributes(**physical)
+            if physical and physical.get("age") is not None:
+                node.attributes.physical.age = physical.get("age")
+        node.has_revision = True
+        node.revision_action = latest_rev.action
+    else:
+        node.has_revision = False
+        node.revision_action = None
+    if node.is_static != original_is_static:
+        node.original_is_static = original_is_static
 
     return node
 

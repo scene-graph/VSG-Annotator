@@ -1,8 +1,11 @@
 """VSG Loader for Jan20 schema video scene graph files."""
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from backend.models.schemas import (
     BBox,
@@ -20,6 +23,8 @@ from backend.models.schemas import (
     TimePeriod,
 )
 
+PERSON_CATEGORIES = {"person", "adult", "child", "baby"}
+
 
 class VSGLoader:
     """Load and parse Jan20 schema VSG files."""
@@ -34,9 +39,25 @@ class VSGLoader:
     def load(self) -> dict[str, Any]:
         """Load the VSG file."""
         if self._data is None:
-            with open(self.vsg_path) as f:
-                self._data = json.load(f)
+            try:
+                with open(self.vsg_path) as f:
+                    self._data = json.load(f)
+            except OSError as e:
+                normalized = self._normalize_outputs_path(self.vsg_path)
+                if normalized != self.vsg_path and normalized.exists():
+                    self.vsg_path = normalized
+                    with open(self.vsg_path) as f:
+                        self._data = json.load(f)
+                else:
+                    raise e
         return self._data
+
+    @staticmethod
+    def _normalize_outputs_path(path: Path) -> Path:
+        value = str(path)
+        while "/outputs/outputs" in value:
+            value = value.replace("/outputs/outputs", "/outputs")
+        return Path(value)
 
     @property
     def data(self) -> dict[str, Any]:
@@ -143,10 +164,13 @@ class VSGLoader:
         visual = attrs.get("visual", {})
         physical = attrs.get("physical", {})
 
+        category = node_data.get("category", "unknown")
+        is_person = category.lower().strip() in PERSON_CATEGORIES
+
         return NodeResponse(
             node_id=node_data["node_id"],
             object_id=node_data.get("object_id", 0),
-            category=node_data.get("category", "unknown"),
+            category=category,
             is_static=is_static,
             attributes=NodeAttributes(
                 visual=NodeVisualAttributes(
@@ -155,8 +179,9 @@ class VSGLoader:
                     material=visual.get("material", "unknown"),
                 ),
                 physical=NodePhysicalAttributes(
-                    size=physical.get("size", "medium"),
-                    shape=physical.get("shape", "unknown"),
+                    size=None if is_person else physical.get("size", "medium"),
+                    shape=None if is_person else physical.get("shape", "unknown"),
+                    age=physical.get("age", "unknown") if is_person else None,
                 ),
             ),
             bboxes_by_frame=bboxes,
@@ -184,6 +209,20 @@ class VSGLoader:
             edge = self._parse_fg_bg_edge(edge_data)
             edges.append(edge)
 
+        # Deduplicate edge IDs: rename later occurrences to <id>_dup1, _dup2, ...
+        seen: dict[str, int] = {}
+        for edge in edges:
+            original_id = edge.edge_id
+            if original_id in seen:
+                seen[original_id] += 1
+                edge.edge_id = f"{original_id}_dup{seen[original_id]}"
+                logger.warning(
+                    "Duplicate edge_id '%s' in VSG — renamed to '%s'",
+                    original_id, edge.edge_id,
+                )
+            else:
+                seen[original_id] = 0
+
         self._edges_cache = edges
         return edges
 
@@ -194,8 +233,42 @@ class VSGLoader:
             end_frame=tp_data.get("end_frame", self.total_frames - 1),
         )
 
+    def _parse_time_periods(self, edge_data: dict) -> list[TimePeriod]:
+        """Parse time periods list from edge data.
+
+        Accepts either `time_periods` (current schema key) or `time_spans`
+        (legacy / alternative key produced by some extractors). Without
+        this fallback, multi-interval edges collapsed to the merged
+        `time_period` envelope and the UI hid the real gaps.
+        """
+        tp_list = edge_data.get("time_periods")
+        if not (isinstance(tp_list, list) and tp_list):
+            tp_list = edge_data.get("time_spans")
+        if isinstance(tp_list, list) and tp_list:
+            return [
+                self._parse_time_period(tp)
+                for tp in tp_list
+                if isinstance(tp, dict)
+            ]
+        # Fallback to single time_period if provided
+        if "time_period" in edge_data:
+            return [self._parse_time_period(edge_data.get("time_period", {}))]
+        # Default full span
+        return [TimePeriod(start_frame=0, end_frame=self.total_frames - 1)]
+
+    def _merge_time_periods(self, periods: list[TimePeriod]) -> TimePeriod:
+        """Compute a union time period from a list."""
+        if not periods:
+            return TimePeriod(start_frame=0, end_frame=self.total_frames - 1)
+        return TimePeriod(
+            start_frame=min(p.start_frame for p in periods),
+            end_frame=max(p.end_frame for p in periods),
+        )
+
     def _parse_static_edge(self, edge_data: dict) -> EdgeResponse:
         """Parse a static edge."""
+        time_periods = self._parse_time_periods(edge_data)
+        merged = self._merge_time_periods(time_periods)
         return EdgeResponse(
             edge_id=edge_data["edge_id"],
             edge_type="static",
@@ -211,7 +284,8 @@ class VSGLoader:
             extraction_round=edge_data.get("extraction_round", 1),
             validation_reasoning_round1=edge_data.get("validation_reasoning_round1", ""),
             validation_reasoning_round2=edge_data.get("validation_reasoning_round2", ""),
-            time_period=self._parse_time_period(edge_data.get("time_period", {})),
+            time_period=merged,
+            time_periods=time_periods,
             attributes=None,
         )
 
@@ -223,7 +297,8 @@ class VSGLoader:
             direction=attrs_data.get("direction", "none"),
             trajectory=attrs_data.get("trajectory", "curved"),
         )
-
+        time_periods = self._parse_time_periods(edge_data)
+        merged = self._merge_time_periods(time_periods)
         return EdgeResponse(
             edge_id=edge_data["edge_id"],
             edge_type="dynamic",
@@ -239,12 +314,15 @@ class VSGLoader:
             extraction_round=edge_data.get("extraction_round", 1),
             validation_reasoning_round1=edge_data.get("validation_reasoning_round1", ""),
             validation_reasoning_round2=edge_data.get("validation_reasoning_round2", ""),
-            time_period=self._parse_time_period(edge_data.get("time_period", {})),
+            time_period=merged,
+            time_periods=time_periods,
             attributes=attrs,
         )
 
     def _parse_fg_bg_edge(self, edge_data: dict) -> EdgeResponse:
         """Parse a foreground-background edge with group-level support."""
+        time_periods = self._parse_time_periods(edge_data)
+        merged = self._merge_time_periods(time_periods)
         return EdgeResponse(
             edge_id=edge_data["edge_id"],
             edge_type="fg_bg",
@@ -260,7 +338,8 @@ class VSGLoader:
             extraction_round=edge_data.get("extraction_round", 1),
             validation_reasoning_round1=edge_data.get("validation_reasoning_round1", ""),
             validation_reasoning_round2=edge_data.get("validation_reasoning_round2", ""),
-            time_period=self._parse_time_period(edge_data.get("time_period", {})),
+            time_period=merged,
+            time_periods=time_periods,
             attributes=None,
         )
 
@@ -292,18 +371,44 @@ class VSGLoader:
 
 
 def find_latest_vsg(sample_dir: Path) -> Optional[Path]:
-    """Find the latest VSG file in a sample's outputs directory."""
-    outputs_dir = sample_dir / "outputs"
-    if not outputs_dir.exists():
-        return None
+    """Find the latest VSG file for a sample.
 
-    vsg_files = list(outputs_dir.glob("video_scene_graph_*.json"))
+    Looks under <sample>/outputs/ first (legacy layout where
+    `video_scene_graph[_*].json` lives next to per-stage artifacts), then
+    falls back to <sample>/video_scene_graph.json at the top level
+    (NIPS layout, where `outputs/` instead holds per-VLM raw dumps).
+    """
+    vsg_files: list[Path] = []
+
+    outputs_dir = sample_dir / "outputs"
+    if outputs_dir.exists():
+        vsg_files.extend(outputs_dir.glob("video_scene_graph_*.json"))
+        exact = outputs_dir / "video_scene_graph.json"
+        if exact.exists() and exact not in vsg_files:
+            vsg_files.append(exact)
+
+    top_level = sample_dir / "video_scene_graph.json"
+    if top_level.exists() and top_level not in vsg_files:
+        vsg_files.append(top_level)
+
     if not vsg_files:
         return None
 
-    # Sort by modification time, return latest
     vsg_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return vsg_files[0]
+
+
+def source_tag_from_dirname(name: str) -> str:
+    """Derive a source-domain tag from a sample directory name.
+
+    Convention: dataset bundles name their sample dirs as
+    `<source>__<sample-id>` (e.g. `Kitti_v2__0000`,
+    `Sav2_V4__sav_003268`). The portion before `__` identifies the
+    collection the video belongs to. If no `__` separator is present,
+    fall back to the full directory name.
+    """
+    head, sep, _ = name.partition("__")
+    return head if sep else name
 
 
 def discover_samples(pvsg_mini_path: Path) -> list[dict[str, Any]]:
@@ -330,6 +435,7 @@ def discover_samples(pvsg_mini_path: Path) -> list[dict[str, Any]]:
             "frames_path": str(frames_dir),
             "masks_path": str(masks_dir) if masks_dir.exists() else None,
             "sample_dir": str(sample_dir),
+            "source_tag": source_tag_from_dirname(sample_dir.name),
         })
 
     return samples

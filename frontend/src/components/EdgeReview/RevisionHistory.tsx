@@ -34,7 +34,8 @@ export function RevisionHistory({ revisions }: RevisionHistoryProps) {
             </span>
           </div>
 
-          {revision.action === 'modify' && (
+          {(revision.action === 'modify' || revision.action === 'accept') &&
+            (revision.new_predicate || revision.new_time_periods || revision.new_time_period || revision.new_attributes) && (
             <div className="text-xs space-y-1 mt-2">
               {revision.original_predicate && revision.new_predicate && (
                 <div>
@@ -44,11 +45,18 @@ export function RevisionHistory({ revisions }: RevisionHistoryProps) {
                   <span className="text-green-400">{revision.new_predicate}</span>
                 </div>
               )}
-              {revision.new_time_period && (
+              {(revision.new_time_periods || revision.new_time_period) && (
                 <div>
                   <span className="text-gray-500">Time Period:</span>{' '}
                   <span className="text-green-400">
-                    {revision.new_time_period.start_frame} - {revision.new_time_period.end_frame}
+                    {(revision.new_time_periods && revision.new_time_periods.length > 0
+                      ? revision.new_time_periods
+                      : revision.new_time_period
+                        ? [revision.new_time_period]
+                        : []
+                    )
+                      .map((tp) => `${tp.start_frame} - ${tp.end_frame}`)
+                      .join(', ')}
                   </span>
                 </div>
               )}

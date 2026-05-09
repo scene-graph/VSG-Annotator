@@ -1,7 +1,7 @@
-import { useRef, useEffect, useMemo, useState } from 'react';
+import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import type { Node } from '../../types';
-import { useAppStore, useCurrentFrame, useSelectedEdge, useSelectedNode, useSourceNodes, useTargetNodes, useEdgeDragState, useEdgeCreation } from '../../store';
+import { useAppStore, useCurrentFrame, useSelectedEdge, useSelectedNode, useSourceNodes, useTargetNodes, useEdgeDragState, useEdgeCreation, useTrackletFocusRequest } from '../../store';
 
 interface TrackletTimelineProps {
   nodes: Node[];
@@ -22,7 +22,11 @@ const COLORS = {
 
 const LANE_HEIGHT = 20;
 const LANE_PADDING = 4;
-const MARGIN = { top: 30, right: 20, bottom: 20, left: 120 };
+// left/right must match EdgeTimeline's MARGIN so the two timelines'
+// x-scales align pixel-for-pixel — lets users visually line up a
+// tracklet with the edges that reference it and drag edge spans against
+// the object's visible frames.
+const MARGIN = { top: 30, right: 20, bottom: 20, left: 150 };
 
 // Extract tracklet range from node's bboxes_by_frame
 function getTrackletRange(node: Node): { start: number; end: number } {
@@ -69,6 +73,7 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
   const justSelectedNodeIdRef = useRef<string | null>(null);
   const nodeOrderRef = useRef<Map<string, number>>(new Map());
   const [containerHeight, setContainerHeight] = useState(200);
+  const hasReviewedNodes = useMemo(() => nodes.some((node) => node.has_revision), [nodes]);
 
   const currentFrame = useCurrentFrame();
   const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
@@ -83,6 +88,9 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
   const edgeCreation = useEdgeCreation();
   const toggleSourceNode = useAppStore((state) => state.toggleSourceNode);
   const toggleTargetNode = useAppStore((state) => state.toggleTargetNode);
+
+  // Cross-panel scroll request (e.g. EdgeReview source/target pill clicks)
+  const trackletFocusRequest = useTrackletFocusRequest();
 
   // Track container height
   useEffect(() => {
@@ -100,7 +108,14 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
     return () => resizeObserver.disconnect();
   }, []);
 
-  // Keep a stable node order based on initial category + start-frame sort
+  // Keep a stable node order based on initial category + start-frame sort.
+  // When an edge is selected, temporarily float all related nodes (sources
+  // first, then targets) to the top so users can scan and drag the relevant
+  // tracklets without scrolling. For fg-bg edges source/target can each
+  // cover a group of nodes — the store already flattens both sides into
+  // sourceNodes/targetNodes arrays, so we just partition on those sets.
+  // Deselecting the edge restores the stable order because nodeOrderRef is
+  // untouched.
   const sortedNodes = useMemo(() => {
     const baseNodes = [...nodes]
       .map((node) => ({
@@ -128,12 +143,35 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
       });
     }
 
-    return baseNodes.sort((a, b) => {
+    const byOrder = (
+      a: (typeof baseNodes)[number],
+      b: (typeof baseNodes)[number]
+    ) => {
       const aOrder = orderMap.get(a.node.node_id) ?? 0;
       const bOrder = orderMap.get(b.node.node_id) ?? 0;
       return aOrder - bOrder;
-    });
-  }, [nodes]);
+    };
+
+    if (!selectedEdge) {
+      return baseNodes.sort(byOrder);
+    }
+
+    const sourceSet = new Set(sourceNodes);
+    const targetSet = new Set(targetNodes);
+    const sources: typeof baseNodes = [];
+    const targets: typeof baseNodes = [];
+    const rest: typeof baseNodes = [];
+    for (const item of baseNodes) {
+      const id = item.node.node_id;
+      if (sourceSet.has(id)) sources.push(item);
+      else if (targetSet.has(id)) targets.push(item);
+      else rest.push(item);
+    }
+    sources.sort(byOrder);
+    targets.sort(byOrder);
+    rest.sort(byOrder);
+    return [...sources, ...targets, ...rest];
+  }, [nodes, selectedEdge, sourceNodes, targetNodes]);
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current) return;
@@ -289,29 +327,22 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
       const isSource = sourceNodes.includes(node.node_id);
       const isTarget = targetNodes.includes(node.node_id);
       const isSelected = selectedNode?.node_id === node.node_id;
+      const isReviewed = Boolean(node.has_revision);
       const hasEdgeSelection = selectedEdge !== null;
       const hasNodeSelection = selectedNode !== null;
       const isInCreationMode = edgeCreation.isCreating;
 
-      // Determine color based on context
-      let color = COLORS.unselected;
-      if (isInCreationMode) {
-        // Edge creation mode: highlight source/target nodes
-        if (isSource) {
-          color = COLORS.source;
-        } else if (isTarget) {
-          color = COLORS.target;
-        } else {
-          color = node.is_static ? COLORS.static : COLORS.dynamic;
-        }
-      } else if (isSelected) {
+      // Determine color based on context. Static/dynamic coloring is the
+      // default so dynamic tracklets stay orange even while an edge is
+      // selected — opacity handles focus dimming separately.
+      let color: string;
+      if (isSelected) {
         color = COLORS.selected;
       } else if (isSource) {
         color = COLORS.source;
       } else if (isTarget) {
         color = COLORS.target;
-      } else if (!hasEdgeSelection && !hasNodeSelection) {
-        // No selection: show static/dynamic colors
+      } else {
         color = node.is_static ? COLORS.static : COLORS.dynamic;
       }
 
@@ -339,8 +370,10 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
       else if (isSource) labelColor = COLORS.source;
       else if (isTarget) labelColor = COLORS.target;
 
-      g.append('text')
-        .attr('x', MARGIN.left - 8)
+      const labelX = MARGIN.left - 8;
+      const labelY = y + LANE_HEIGHT / 2 + 4;
+      const labelText = g.append('text')
+        .attr('x', labelX)
         .attr('y', y + LANE_HEIGHT / 2 + 4)
         .attr('text-anchor', 'end')
         .attr('font-size', '11px')
@@ -357,13 +390,35 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
               toggleTargetNode(node.node_id);
             }
           } else {
-            // Normal mode: select this node and seek to first frame
+            // Normal mode: select this node and seek to best frame (largest bbox)
             setSelectedNode(node);
-            if (segments.length > 0) {
+            const bboxEntries = Object.entries(node.bboxes_by_frame);
+            if (bboxEntries.length > 0) {
+              let bestFrame = Number(bboxEntries[0][0]);
+              let bestArea = 0;
+              for (const [frameStr, bbox] of bboxEntries) {
+                const area = (bbox.width ?? 0) * (bbox.height ?? 0);
+                if (area > bestArea) {
+                  bestArea = area;
+                  bestFrame = Number(frameStr);
+                }
+              }
+              setCurrentFrame(bestFrame);
+            } else if (segments.length > 0) {
               setCurrentFrame(segments[0].start);
             }
           }
         });
+
+      if (isReviewed) {
+        const labelWidth = labelText.node()?.getComputedTextLength() ?? 0;
+        g.append('circle')
+          .attr('cx', labelX - labelWidth - 10)
+          .attr('cy', labelY - 4)
+          .attr('r', 4)
+          .attr('fill', '#22c55e')
+          .attr('pointer-events', 'none');
+      }
 
       // Draw each contiguous segment as a separate bar
       segments.forEach((segment) => {
@@ -486,59 +541,74 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
       });
   }, [sortedNodes, totalFrames, currentFrame, selectedEdge, selectedNode, sourceNodes, targetNodes, setCurrentFrame, setSelectedNode, containerHeight, edgeDragState, edgeCreation, toggleSourceNode, toggleTargetNode]);
 
-  // Track selection changes - mark the node as just selected
+  // Scroll a given tracklet into view. `center: true` places the lane at
+  // the vertical midpoint of the viewport; otherwise it uses the 1/3-from-
+  // top rule for a natural reading position. No-ops if the lane is
+  // already comfortably visible so repeat clicks don't jump the viewport.
+  const scrollNodeIntoView = useCallback(
+    (nodeId: string, options: { center?: boolean } = {}) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const nodeIndex = sortedNodes.findIndex(({ node }) => node.node_id === nodeId);
+      if (nodeIndex === -1) return;
+
+      const nodeY = MARGIN.top + nodeIndex * (LANE_HEIGHT + LANE_PADDING);
+      const nodeBottom = nodeY + LANE_HEIGHT;
+
+      const scrollTop = container.scrollTop;
+      const viewportHeight = container.clientHeight;
+      const visibleTop = scrollTop + 20;
+      const visibleBottom = scrollTop + viewportHeight - 20;
+
+      if (nodeY >= visibleTop && nodeBottom <= visibleBottom) {
+        return;
+      }
+
+      const targetScrollTop = options.center
+        ? nodeY - viewportHeight / 2 + LANE_HEIGHT / 2
+        : nodeY - viewportHeight / 3;
+      const maxScroll = container.scrollHeight - viewportHeight;
+      const clampedScrollTop = Math.max(0, Math.min(targetScrollTop, maxScroll));
+
+      container.scrollTo({
+        top: clampedScrollTop,
+        behavior: 'smooth',
+      });
+    },
+    [sortedNodes]
+  );
+
+  // Track selection changes - mark the node as just selected so the next
+  // render of the tracklet lanes (which may reshuffle sortedNodes) scrolls.
   useEffect(() => {
     if (selectedNode) {
       justSelectedNodeIdRef.current = selectedNode.node_id;
     }
   }, [selectedNode?.node_id]);
 
-  // Scroll to selected node after re-render
+  // Scroll to the just-selected node once lanes are laid out.
   useEffect(() => {
     const nodeId = justSelectedNodeIdRef.current;
-    if (!nodeId || !containerRef.current) return;
-
-    // Use requestAnimationFrame to ensure scroll happens after paint
+    if (!nodeId) return;
     const rafId = requestAnimationFrame(() => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const nodeIndex = sortedNodes.findIndex(({ node }) => node.node_id === nodeId);
-      if (nodeIndex === -1) {
-        justSelectedNodeIdRef.current = null;
-        return;
-      }
-
-      const nodeY = MARGIN.top + nodeIndex * (LANE_HEIGHT + LANE_PADDING);
-      const nodeBottom = nodeY + LANE_HEIGHT;
-
-      // Check if node is already visible (with padding)
-      const scrollTop = container.scrollTop;
-      const containerHeight = container.clientHeight;
-      const visibleTop = scrollTop + 20;
-      const visibleBottom = scrollTop + containerHeight - 20;
-
-      if (nodeY >= visibleTop && nodeBottom <= visibleBottom) {
-        // Already visible, no need to scroll
-        justSelectedNodeIdRef.current = null;
-        return;
-      }
-
-      // Scroll to position node at 1/3 from top (natural viewing position)
-      const targetScrollTop = nodeY - containerHeight / 3;
-      const maxScroll = container.scrollHeight - containerHeight;
-      const clampedScrollTop = Math.max(0, Math.min(targetScrollTop, maxScroll));
-
-      container.scrollTo({
-        top: clampedScrollTop,
-        behavior: 'smooth'
-      });
-
+      scrollNodeIntoView(nodeId);
       justSelectedNodeIdRef.current = null;
     });
-
     return () => cancelAnimationFrame(rafId);
-  }, [sortedNodes]);
+  }, [sortedNodes, scrollNodeIntoView]);
+
+  // React to cross-panel focus requests (EdgeReview source/target pill
+  // clicks). Keyed on the request's nonce so repeat clicks on the same
+  // node still re-fire the scroll.
+  useEffect(() => {
+    if (!trackletFocusRequest) return;
+    const { nodeId } = trackletFocusRequest;
+    const rafId = requestAnimationFrame(() => {
+      scrollNodeIntoView(nodeId, { center: true });
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [trackletFocusRequest?.nonce, trackletFocusRequest?.nodeId, scrollNodeIntoView]);
 
   const contentHeight = Math.max(
     containerHeight,
@@ -649,6 +719,12 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
             </div>
           </>
         )}
+        {hasReviewedNodes && (
+          <div className="flex items-center gap-1 ml-2 border-l border-gray-600 pl-3">
+            <span className="w-3 h-3 rounded-full" style={{ backgroundColor: '#22c55e' }} />
+            <span className="text-gray-300 text-xs">Reviewed</span>
+          </div>
+        )}
         {edgeDragState && (
           <div className="flex items-center gap-1 ml-2 border-l border-gray-600 pl-3 animate-pulse">
             <span
@@ -660,8 +736,14 @@ export function TrackletTimeline({ nodes, totalFrames }: TrackletTimelineProps) 
         )}
       </div>
 
-      {/* Timeline */}
-      <div ref={containerRef} className="overflow-auto flex-1" style={{ maxHeight: containerHeight }}>
+      {/* Timeline — scrollbarGutter: stable reserves the vertical scrollbar
+          width even when content doesn't overflow, so this timeline's
+          inner width matches EdgeTimeline's regardless of lane count. */}
+      <div
+        ref={containerRef}
+        className="overflow-auto flex-1"
+        style={{ maxHeight: containerHeight, scrollbarGutter: 'stable' }}
+      >
         <svg ref={svgRef} width="100%" height={contentHeight} />
       </div>
     </div>

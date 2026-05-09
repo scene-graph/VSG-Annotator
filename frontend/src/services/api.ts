@@ -41,6 +41,10 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 // Videos API
 export const videosApi = {
+  reload: (): Promise<{ imported: string[]; skipped: string[]; imported_count: number; skipped_count: number; total_on_disk: number }> => {
+    return fetchJson(`${API_BASE}/videos/reload`, { method: 'POST' });
+  },
+
   list: (status?: string, dataset?: string): Promise<VideoSummary[]> => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
@@ -84,6 +88,13 @@ export const videosApi = {
   getCameraMotion: (videoId: string): Promise<CameraMotion | null> => {
     return fetchJson(`${API_BASE}/videos/${videoId}/camera-motion`);
   },
+
+  updateStatus: (videoId: string, status: string): Promise<{ video_id: string; status: string }> => {
+    return fetchJson(`${API_BASE}/videos/${videoId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    });
+  },
 };
 
 // Edges API
@@ -122,6 +133,35 @@ export const edgesApi = {
 
   getHistory: (videoId: string, edgeId: string): Promise<Revision[]> => {
     return fetchJson(`${API_BASE}/videos/${videoId}/edges/${edgeId}/history`);
+  },
+};
+
+// Reextract API — Gemini-driven predicate/motion re-extraction jobs.
+export interface ReextractJob {
+  id: number;
+  edge_id: string;
+  prev_edge_type: string;
+  new_edge_type: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  result_predicate?: string | null;
+  result_attributes?: { velocity: string; direction: string; trajectory: string } | null;
+  result_time_periods?: Array<{ start_frame: number; end_frame: number }> | null;
+  error?: string | null;
+  applied_revision_id?: number | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export const reextractApi = {
+  listJobs: (videoId: string, edgeId?: string): Promise<ReextractJob[]> => {
+    const q = edgeId ? `?edge_id=${encodeURIComponent(edgeId)}` : '';
+    return fetchJson(`${API_BASE}/videos/${videoId}/reextract/jobs${q}`);
+  },
+  triggerEdge: (videoId: string, edgeId: string): Promise<{ enqueued_job_ids: number[] }> => {
+    return fetchJson(`${API_BASE}/videos/${videoId}/reextract/edge/${edgeId}`, {
+      method: 'POST',
+    });
   },
 };
 

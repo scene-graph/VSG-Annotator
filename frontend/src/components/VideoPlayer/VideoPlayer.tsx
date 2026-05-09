@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { useAppStore, useCurrentFrame, useSourceNodes, useTargetNodes, useSelectedNode } from '../../store';
+import { useAppStore, useCurrentFrame, useSourceNodes, useTargetNodes, useSelectedNode, useMasksVisible, useMaskOpacity, useSelectedMaskObject, useHiddenMaskObjects, useBboxesVisible } from '../../store';
 import { videosApi } from '../../services/api';
-import type { Node, BBox } from '../../types';
+import type { Node, BBox, MaskMetadata } from '../../types';
 import { BBoxOverlay } from './BBoxOverlay';
+import { MaskOverlay } from './MaskOverlay';
 
 interface VideoPlayerProps {
   videoId: string;
@@ -10,6 +11,16 @@ interface VideoPlayerProps {
   fps: number;
   resolution: { width: number; height: number };
   nodes: Node[];
+  maskMetadata?: MaskMetadata | null;
+  onMaskObjectClick?: (objectId: number | null) => void;
+}
+
+function frameToTimestamp(frame: number, fps: number): string {
+  const totalSeconds = frame / fps;
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = Math.floor(totalSeconds % 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 // Frame buffer configuration
@@ -22,7 +33,7 @@ interface BufferedFrame {
   loaded: boolean;
 }
 
-export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: VideoPlayerProps) {
+export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes, maskMetadata, onMaskObjectClick }: VideoPlayerProps) {
   const currentFrame = useCurrentFrame();
   const setCurrentFrame = useAppStore((state) => state.setCurrentFrame);
   const isPlaying = useAppStore((state) => state.isPlaying);
@@ -30,6 +41,13 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
   const sourceNodes = useSourceNodes();
   const targetNodes = useTargetNodes();
   const selectedNode = useSelectedNode();
+  const bboxesVisible = useBboxesVisible();
+
+  // Mask overlay state
+  const masksVisible = useMasksVisible();
+  const maskOpacity = useMaskOpacity();
+  const selectedMaskObject = useSelectedMaskObject();
+  const hiddenMaskObjects = useHiddenMaskObjects();
 
   const [frameReady, setFrameReady] = useState(false);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -40,10 +58,14 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
   const frameBufferRef = useRef<Map<number, BufferedFrame>>(new Map());
   const loadingFramesRef = useRef<Set<number>>(new Set());
 
+  // Playback speed control
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const SPEED_OPTIONS = [0.25, 0.5, 1, 2, 4, 8];
+
   // requestAnimationFrame state
   const animationFrameRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef<number>(0);
-  const frameDuration = 1000 / fps;
+  const frameDuration = 1000 / (fps * playbackSpeed);
 
   // Pre-indexed bounding boxes by frame for O(1) lookup
   const bboxesByFrame = useMemo(() => {
@@ -99,12 +121,19 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
     const frameBboxes = bboxesByFrame.get(currentFrame);
     if (!frameBboxes) return [];
 
+    // When a node is selected, only show that node's bbox
+    if (selectedNode) {
+      const match = frameBboxes.find(({ nodeId }) => nodeId === selectedNode.node_id);
+      if (match) {
+        return [{ nodeId: match.nodeId, category: match.category, bbox: match.bbox, role: 'selected' }];
+      }
+      return [];
+    }
+
     return frameBboxes.map(({ nodeId, category, bbox }) => {
       // Determine role based on selection state
       let role: 'source' | 'target' | 'selected' | null = null;
-      if (selectedNode?.node_id === nodeId) {
-        role = 'selected';
-      } else if (sourceNodes.includes(nodeId)) {
+      if (sourceNodes.includes(nodeId)) {
         role = 'source';
       } else if (targetNodes.includes(nodeId)) {
         role = 'target';
@@ -325,12 +354,27 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
             className="w-full h-full"
             style={{ imageRendering: 'auto' }}
           />
-          {frameReady && (
+          {frameReady && masksVisible && maskMetadata?.has_masks && (
+            <MaskOverlay
+              videoId={videoId}
+              frameIdx={currentFrame}
+              width={displayWidth}
+              height={displayHeight}
+              visible={masksVisible}
+              opacity={maskOpacity}
+              metadata={maskMetadata}
+              selectedObjectId={typeof selectedMaskObject === 'string' ? null : selectedMaskObject}
+              hiddenObjectIds={hiddenMaskObjects as Set<number>}
+              onObjectClick={onMaskObjectClick}
+            />
+          )}
+          {frameReady && bboxesVisible && (
             <BBoxOverlay
               bboxes={getBBoxesForFrame()}
               scale={scale}
               width={displayWidth}
               height={displayHeight}
+              selectionActive={sourceNodes.length + targetNodes.length > 0 || selectedNode !== null}
             />
           )}
         </div>
@@ -340,8 +384,8 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
       <div className="p-4 bg-gray-800">
         {/* Timeline slider */}
         <div className="flex items-center gap-4 mb-2">
-          <span className="text-white text-sm font-mono w-16">
-            {String(currentFrame).padStart(4, '0')}
+          <span className="text-white text-sm font-mono w-40">
+            {frameToTimestamp(currentFrame, fps)} <span className="text-gray-400">F{currentFrame}</span>
           </span>
           <input
             type="range"
@@ -351,8 +395,8 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
             onChange={(e) => setCurrentFrame(Number(e.target.value))}
             className="flex-1 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
           />
-          <span className="text-white text-sm font-mono w-16 text-right">
-            {String(totalFrames - 1).padStart(4, '0')}
+          <span className="text-white text-sm font-mono w-28 text-right" title={`Frame ${totalFrames - 1}`}>
+            {frameToTimestamp(totalFrames - 1, fps)}
           </span>
         </div>
 
@@ -415,9 +459,26 @@ export function VideoPlayer({ videoId, totalFrames, fps, resolution, nodes }: Vi
           </button>
         </div>
 
-        {/* Frame info */}
-        <div className="flex justify-center mt-2 text-gray-400 text-sm">
-          Frame {currentFrame + 1} of {totalFrames} | {fps} FPS
+        {/* Speed control + Frame info */}
+        <div className="flex items-center justify-center mt-2 gap-4 text-gray-400 text-sm">
+          <div className="flex items-center gap-1">
+            {SPEED_OPTIONS.map((s) => (
+              <button
+                key={s}
+                onClick={() => setPlaybackSpeed(s)}
+                className={`px-1.5 py-0.5 rounded text-xs font-mono transition-colors ${
+                  playbackSpeed === s
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+              >
+                {s}x
+              </button>
+            ))}
+          </div>
+          <span>
+            Frame {currentFrame + 1} of {totalFrames} | {frameToTimestamp(currentFrame, fps)} / {frameToTimestamp(totalFrames - 1, fps)} | {fps} FPS
+          </span>
         </div>
       </div>
     </div>

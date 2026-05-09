@@ -32,10 +32,13 @@ class AnnotationService:
 
     async def accept_edge(self, annotation: AnnotationAccept) -> dict:
         """Accept an edge as-is."""
-        # Get the original edge
+        # Get the current edge state (VSG edge or created edge)
         edge = self.vsg_loader.get_edge_by_id(annotation.edge_id)
         if edge is None:
-            raise ValueError(f"Edge not found: {annotation.edge_id}")
+            effective_edges = await self.get_edges_with_revisions()
+            edge = next((e for e in effective_edges if e.edge_id == annotation.edge_id), None)
+            if edge is None:
+                raise ValueError(f"Edge not found: {annotation.edge_id}")
 
         # Record the acceptance
         revision = await self.tracker.record_accept(annotation, edge)
@@ -77,6 +80,12 @@ class AnnotationService:
         # Record the modification
         revision = await self.tracker.record_modify(annotation, edge)
 
+        time_periods = None
+        if annotation.new_time_periods is not None:
+            time_periods = [tp.model_dump() for tp in annotation.new_time_periods]
+        elif annotation.new_time_period is not None:
+            time_periods = [annotation.new_time_period.model_dump()]
+
         return {
             "success": True,
             "revision_id": revision.id,
@@ -89,6 +98,7 @@ class AnnotationService:
                     if annotation.new_time_period
                     else None
                 ),
+                "time_periods": time_periods,
                 "attributes": (
                     annotation.new_attributes.model_dump()
                     if annotation.new_attributes
@@ -137,78 +147,73 @@ class AnnotationService:
         """Get the current state of a created edge from the database.
 
         For created edges (not in VSG), this builds an EdgeResponse from
-        the latest revision data.
+        revision history.
         """
         import json
         from backend.models.schemas import MotionAttributes, TimePeriod
-
-        # Get the latest revision for this edge
-        latest = await self.tracker.get_latest_revision(self._video_id, edge_id)
-        if latest is None:
-            return None
-
-        # Only handle create/modify actions (not accept/reject which are for VSG edges)
-        if latest.action not in ("create", "modify"):
-            return None
-
-        # For "create" revision, the new_* fields are the initial state
-        # For "modify" revision, the new_* fields are the current state (or None if unchanged)
-        # We need to trace back to get the full current state
-
-        # Get the original create revision to get base values
-        all_revisions = await self.tracker.get_edge_history(self._video_id, edge_id)
-        if not all_revisions:
-            return None
-
-        # Find the create revision (oldest one with action=create)
         from backend.models.database import EdgeRevision, Video
 
-        create_rev = None
-        for rev in reversed(all_revisions):  # oldest first
-            if rev.action == "create":
-                # Need to get the actual EdgeRevision object, not RevisionResponse
-                video_result = await self.session.execute(
-                    select(Video).where(Video.video_id == self._video_id)
-                )
-                video = video_result.scalar_one_or_none()
-                if video:
-                    result = await self.session.execute(
-                        select(EdgeRevision).where(EdgeRevision.id == rev.id)
-                    )
-                    create_rev = result.scalar_one_or_none()
-                break
+        video_result = await self.session.execute(
+            select(Video).where(Video.video_id == self._video_id)
+        )
+        video = video_result.scalar_one_or_none()
+        if video is None:
+            return None
 
+        result = await self.session.execute(
+            select(EdgeRevision)
+            .where(
+                EdgeRevision.video_id == video.id,
+                EdgeRevision.edge_id == edge_id,
+            )
+            .order_by(EdgeRevision.created_at.asc(), EdgeRevision.id.asc())
+        )
+        revisions = list(result.scalars().all())
+        if not revisions:
+            return None
+
+        latest = revisions[-1]
+        if latest.action == "delete":
+            return None
+
+        create_rev = next((rev for rev in revisions if rev.action == "create"), None)
         if create_rev is None:
             return None
 
-        # Start with create revision values
         source = json.loads(create_rev.new_source) if create_rev.new_source else []
         target = json.loads(create_rev.new_target) if create_rev.new_target else []
         predicate = create_rev.new_predicate or ""
-        time_period_dict = create_rev.new_time_period or {"start_frame": 0, "end_frame": 0}
+        time_periods_dict = (
+            create_rev.new_time_periods
+            or ([create_rev.new_time_period] if create_rev.new_time_period else None)
+            or [{"start_frame": 0, "end_frame": 0}]
+        )
         attributes_dict = create_rev.new_attributes
 
-        # Apply any subsequent modifications
-        if latest.action == "modify" and latest.id != create_rev.id:
-            # Get the latest revision object
-            result = await self.session.execute(
-                select(EdgeRevision).where(EdgeRevision.id == latest.id)
-            )
-            modify_rev = result.scalar_one_or_none()
-            if modify_rev:
-                if modify_rev.new_predicate:
-                    predicate = modify_rev.new_predicate
-                if modify_rev.new_time_period:
-                    time_period_dict = modify_rev.new_time_period
-                if modify_rev.new_attributes:
-                    attributes_dict = modify_rev.new_attributes
-                if modify_rev.new_source:
-                    source = json.loads(modify_rev.new_source)
-                if modify_rev.new_target:
-                    target = json.loads(modify_rev.new_target)
+        for rev in revisions:
+            if rev.id == create_rev.id:
+                continue
+            if rev.action == "delete":
+                return None
+            if rev.action not in ("modify", "accept"):
+                continue
+
+            if rev.new_predicate is not None:
+                predicate = rev.new_predicate
+            if rev.new_time_periods is not None:
+                time_periods_dict = rev.new_time_periods
+            elif rev.new_time_period is not None:
+                time_periods_dict = [rev.new_time_period]
+            if rev.new_attributes is not None:
+                attributes_dict = rev.new_attributes
+            if rev.new_source is not None:
+                source = json.loads(rev.new_source)
+            if rev.new_target is not None:
+                target = json.loads(rev.new_target)
 
         # Build and return EdgeResponse
-        time_period = TimePeriod(**time_period_dict)
+        time_periods = [TimePeriod(**tp) for tp in time_periods_dict]
+        time_period = self._merge_time_periods(time_periods)
         attributes = MotionAttributes(**attributes_dict) if attributes_dict else None
 
         # Get node categories for source/target
@@ -245,6 +250,7 @@ class AnnotationService:
             validation_reasoning_round1="Human annotated",
             validation_reasoning_round2="",
             time_period=time_period,
+            time_periods=time_periods,
             attributes=attributes,
             has_revision=True,
             revision_action=latest.action,
@@ -262,9 +268,60 @@ class AnnotationService:
             "visual": node.attributes.visual.model_dump(),
             "physical": node.attributes.physical.model_dump(),
         }
+        original_is_static = node.is_static
+        original_category = node.category
+
+        # Prefer latest revision values if exists
+        latest_rev = await self.tracker.get_latest_node_revision(
+            modification.video_id, modification.node_id
+        )
+        if latest_rev:
+            if latest_rev.new_is_static is not None:
+                original_is_static = latest_rev.new_is_static
+            if latest_rev.new_category is not None:
+                original_category = latest_rev.new_category
+
+        # Snapshot pre-flip effective edge_type per edge so we can detect
+        # transitions caused by this node flip and enqueue reextraction.
+        pre_flip_types: dict[str, str] = {}
+        flip_changed_type = (
+            modification.new_is_static is not None
+            and modification.new_is_static != original_is_static
+        )
+        if flip_changed_type:
+            pre_edges = await self.get_edges_with_revisions()
+            pre_flip_types = {e.edge_id: e.edge_type for e in pre_edges}
 
         # Record the modification
-        revision = await self.tracker.record_node_modify(modification, original_attributes)
+        revision = await self.tracker.record_node_modify(
+            modification, original_attributes, original_is_static, original_category
+        )
+
+        # After the revision is recorded, recompute effective edges to see
+        # which ones transitioned. Enqueue Gemini reextract jobs for each
+        # transitioning edge so the predicate + motion attrs match the new
+        # edge_type's schema vocabulary.
+        enqueued: list[int] = []
+        if flip_changed_type:
+            post_edges = await self.get_edges_with_revisions()
+            transitions: list[tuple[str, str, str]] = []
+            for e in post_edges:
+                prev_type = pre_flip_types.get(e.edge_id)
+                if prev_type and prev_type != e.edge_type:
+                    transitions.append((e.edge_id, prev_type, e.edge_type))
+
+            if transitions:
+                from backend.models.database import Video
+                from backend.services.reextract_service import ReextractService
+
+                vid_row = await self.session.execute(
+                    select(Video).where(Video.video_id == modification.video_id)
+                )
+                vid = vid_row.scalar_one_or_none()
+                if vid is not None:
+                    reextract = ReextractService(self.session, vid.id, modification.video_id)
+                    enqueued = await reextract.enqueue_transitions(transitions)
+                    ReextractService.spawn_background(enqueued)
 
         return {
             "success": True,
@@ -282,7 +339,10 @@ class AnnotationService:
                     if modification.new_physical_attributes
                     else None
                 ),
+                "is_static": modification.new_is_static,
+                "category": modification.new_category,
             },
+            "reextract_job_ids": enqueued,
         }
 
     async def get_node_history(
@@ -306,16 +366,28 @@ class AnnotationService:
             edge.has_revision = True
             edge.revision_action = latest.action
 
-            # Apply modifications if this is a "modify" action
-            if latest.action == "modify":
-                if latest.new_predicate:
+            # Apply accepted/modified values if present.
+            if latest.action in ("modify", "accept"):
+                if latest.new_predicate is not None:
                     edge.predicate = latest.new_predicate
-                if latest.new_time_period:
+                if latest.new_time_periods is not None:
+                    from backend.models.schemas import TimePeriod
+                    periods = [TimePeriod(**tp) for tp in latest.new_time_periods]
+                    edge.time_periods = periods
+                    edge.time_period = self._merge_time_periods(periods)
+                elif latest.new_time_period is not None:
                     from backend.models.schemas import TimePeriod
                     edge.time_period = TimePeriod(**latest.new_time_period)
-                if latest.new_attributes:
+                    edge.time_periods = [edge.time_period]
+                if latest.new_attributes is not None:
                     from backend.models.schemas import MotionAttributes
                     edge.attributes = MotionAttributes(**latest.new_attributes)
+                if latest.new_source is not None:
+                    import json
+                    edge.source = json.loads(latest.new_source)
+                if latest.new_target is not None:
+                    import json
+                    edge.target = json.loads(latest.new_target)
 
         return edge
 
@@ -355,14 +427,25 @@ class AnnotationService:
                 edge.has_revision = True
                 edge.revision_action = rev.action
 
-                # Apply modifications if this is a "modify" action
-                if rev.action == "modify":
-                    if rev.new_predicate:
+                # Apply accepted/modified values if present.
+                if rev.action in ("modify", "accept"):
+                    if rev.new_predicate is not None:
                         edge.predicate = rev.new_predicate
-                    if rev.new_time_period:
+                    if rev.new_time_periods is not None:
+                        periods = [TimePeriod(**tp) for tp in rev.new_time_periods]
+                        edge.time_periods = periods
+                        edge.time_period = self._merge_time_periods(periods)
+                    elif rev.new_time_period is not None:
                         edge.time_period = TimePeriod(**rev.new_time_period)
-                    if rev.new_attributes:
+                        edge.time_periods = [edge.time_period]
+                    if rev.new_attributes is not None:
                         edge.attributes = MotionAttributes(**rev.new_attributes)
+                    if rev.new_source is not None:
+                        import json
+                        edge.source = json.loads(rev.new_source)
+                    if rev.new_target is not None:
+                        import json
+                        edge.target = json.loads(rev.new_target)
 
         # Filter out deleted edges
         edges = [e for e in edges if e.edge_id not in deleted_ids]
@@ -374,7 +457,226 @@ class AnnotationService:
         created_edges = [e for e in created_edges if e.edge_id not in deleted_ids]
         edges.extend(created_edges)
 
+        # Reclassify edge types based on current node static/dynamic status
+        edges = await self._reclassify_edges_by_nodes(edges)
+
         return edges
+
+    async def _reclassify_edges_by_nodes(self, edges: list[EdgeResponse]) -> list[EdgeResponse]:
+        """Update edge_type based on current node static/dynamic status.
+
+        Derived side effects driven by node static/dynamic flips:
+          * When an edge is reclassified to ``static``, overwrite its
+            time_period(s) with the full video span, since static objects
+            are assumed not to move and the relation holds for the whole
+            video.
+          * On group ``fg_bg`` edges, drop sources whose type flipped to
+            static and targets whose type flipped to dynamic (those members
+            no longer satisfy the fg_bg contract of dynamic→static). If a
+            side is emptied, the edge is dropped entirely.
+          * Refresh each edge's ``source_category`` / ``target_category``
+            from the live node map so that a node-category revision
+            propagates to its related edges.
+          * After reclassification, drop edges whose stored predicate does
+            not belong to the new edge_type's canonical vocabulary (e.g. a
+            fg_bg ``driving_on`` edge that reclassifies to ``static`` has
+            no valid static-edge predicate and is dropped).
+        """
+        from backend.models.schemas import TimePeriod
+        from backend.core.predicate_vocab import predicate_valid_for_type
+
+        # Build node_id -> is_static / category / bboxes maps. The bboxes
+        # map lets us compute covisible spans for edges that transition
+        # out of ``static`` (which hold the full video span) into fg_bg
+        # or dynamic (which should be scoped to where the nodes co-exist).
+        all_nodes = list(self.vsg_loader.get_all_nodes().values())
+        node_map = {n.node_id: n.is_static for n in all_nodes}
+        category_map = {n.node_id: n.category for n in all_nodes}
+        bboxes_map: dict[str, dict] = {
+            n.node_id: (n.bboxes_by_frame or {}) for n in all_nodes
+        }
+
+        def _covisible_span(node_ids: list[str]) -> Optional[tuple[int, int]]:
+            """Intersection of visible frames across the given nodes."""
+            frame_sets: list[set[int]] = []
+            for nid in node_ids:
+                bbs = bboxes_map.get(nid) or {}
+                frames = {int(f) for f in bbs.keys()}
+                if not frames:
+                    return None
+                frame_sets.append(frames)
+            if not frame_sets:
+                return None
+            shared = set.intersection(*frame_sets)
+            if not shared:
+                return None
+            return min(shared), max(shared)
+
+        # Apply latest node revisions to the type + category maps
+        for node in all_nodes:
+            latest_rev = await self.tracker.get_latest_node_revision(self._video_id, node.node_id)
+            if latest_rev:
+                if latest_rev.new_is_static is not None:
+                    node_map[node.node_id] = latest_rev.new_is_static
+                if latest_rev.new_category is not None:
+                    category_map[node.node_id] = latest_rev.new_category
+
+        total_frames = self.vsg_loader.total_frames
+        # Guard against zero-frame or unknown metadata
+        full_span_end = max(total_frames - 1, 0)
+        full_span = TimePeriod(start_frame=0, end_frame=full_span_end)
+
+        def classify_edge(edge: EdgeResponse) -> tuple[str, Optional[str]]:
+            sources = edge.source if isinstance(edge.source, list) else [edge.source]
+            targets = edge.target if isinstance(edge.target, list) else [edge.target]
+            source_static = [node_map.get(s, False) for s in sources]
+            target_static = [node_map.get(t, False) for t in targets]
+
+            # Lists: only keep fg_bg unless singleton conversion is possible
+            if len(sources) != 1 or len(targets) != 1:
+                if all(not s for s in source_static) and all(t for t in target_static):
+                    return "fg_bg", None
+                return edge.edge_type, "Edge type mismatch after node type change"
+
+            s_static = source_static[0]
+            t_static = target_static[0]
+            if s_static and t_static:
+                return "static", None
+            if not s_static and not t_static:
+                return "dynamic", None
+            return "fg_bg", None
+
+        reconciled: list[EdgeResponse] = []
+        for edge in edges:
+            # 1) Prune group-edge members whose type no longer fits the fg_bg
+            #    contract. Only true group edges (>1 source or >1 target)
+            #    are pruned; singleton 1:1 fg_bg edges are left intact so
+            #    classify_edge below can transition them to ``static`` when
+            #    both endpoints become static.
+            is_group_fg_bg = (
+                edge.edge_type == "fg_bg"
+                and isinstance(edge.source, list)
+                and isinstance(edge.target, list)
+                and (len(edge.source) > 1 or len(edge.target) > 1)
+            )
+            if is_group_fg_bg:
+                kept_sources = [s for s in edge.source if not node_map.get(s, False)]
+                kept_targets = [t for t in edge.target if node_map.get(t, False)]
+
+                if not kept_sources or not kept_targets:
+                    # Drop the edge entirely — there are no valid
+                    # dynamic→static pairings left.
+                    continue
+
+                if kept_sources != edge.source or kept_targets != edge.target:
+                    src_cats = edge.source_category if isinstance(edge.source_category, list) else [edge.source_category]
+                    tgt_cats = edge.target_category if isinstance(edge.target_category, list) else [edge.target_category]
+                    source_cat_map = dict(zip(edge.source, src_cats))
+                    target_cat_map = dict(zip(edge.target, tgt_cats))
+                    # Record pruned members so the UI can surface them
+                    # under the flipped node's "Related Edges" list with
+                    # a "removed after type flip" marker rather than
+                    # silently dropping them from view.
+                    edge.pruned_sources = [s for s in edge.source if s not in kept_sources]
+                    edge.pruned_targets = [t for t in edge.target if t not in kept_targets]
+                    edge.source = kept_sources
+                    edge.target = kept_targets
+                    edge.source_category = [source_cat_map.get(s, "unknown") for s in kept_sources]
+                    edge.target_category = [target_cat_map.get(t, "unknown") for t in kept_targets]
+                    note = "Group members dropped after node type change"
+                    if not edge.validation_reasoning_round2:
+                        edge.validation_reasoning_round2 = note
+
+            # 2) Reclassify edge_type from node types
+            prev_type = edge.edge_type
+            new_type, note = classify_edge(edge)
+            edge.edge_type = new_type
+            if note and not edge.validation_reasoning_round2:
+                edge.validation_reasoning_round2 = note
+
+            # 2b) When transitioning from fg_bg to a 1:1 static or dynamic
+            #     edge, collapse singleton lists to strings so the response
+            #     shape matches the StaticEdge/DynamicEdge contract.
+            if new_type in ("static", "dynamic") and new_type != prev_type:
+                if isinstance(edge.source, list) and len(edge.source) == 1:
+                    edge.source = edge.source[0]
+                if isinstance(edge.target, list) and len(edge.target) == 1:
+                    edge.target = edge.target[0]
+                if isinstance(edge.source_category, list) and len(edge.source_category) == 1:
+                    edge.source_category = edge.source_category[0]
+                if isinstance(edge.target_category, list) and len(edge.target_category) == 1:
+                    edge.target_category = edge.target_category[0]
+
+            # 3) When an edge transitions into ``static`` from a non-static
+            #    type, force the full-video span. Static relations are
+            #    assumed to hold for the entire video. We only overwrite on
+            #    transition so that pre-existing static edges keep any
+            #    user-annotated narrow spans.
+            if new_type == "static" and prev_type != "static":
+                edge.time_period = full_span
+                edge.time_periods = [full_span]
+
+            # 3b) When an edge transitions OUT of ``static`` (into fg_bg
+            #     or dynamic), the stored span is almost certainly the
+            #     full-video [0, T-1] default that static edges carry. A
+            #     fg_bg / dynamic edge should instead be scoped to the
+            #     covisible lifespan of its participating nodes. Only
+            #     truncate on transition so user-annotated spans on edges
+            #     that were already fg_bg/dynamic are preserved.
+            if prev_type == "static" and new_type in ("fg_bg", "dynamic"):
+                participants = []
+                if isinstance(edge.source, list):
+                    participants.extend(edge.source)
+                else:
+                    participants.append(edge.source)
+                if isinstance(edge.target, list):
+                    participants.extend(edge.target)
+                else:
+                    participants.append(edge.target)
+                span = _covisible_span(participants)
+                if span is not None:
+                    start_f, end_f = span
+                    truncated = TimePeriod(start_frame=start_f, end_frame=end_f)
+                    edge.time_period = truncated
+                    edge.time_periods = [truncated]
+                    if not edge.validation_reasoning_round2:
+                        edge.validation_reasoning_round2 = (
+                            "Time period truncated to covisible span after type flip"
+                        )
+
+            # 4) Refresh source_category / target_category from the live
+            #    node map. A node-category revision would otherwise leave
+            #    stale strings on every edge that references it.
+            if isinstance(edge.source, list):
+                edge.source_category = [
+                    category_map.get(s, "unknown") for s in edge.source
+                ]
+            else:
+                edge.source_category = category_map.get(edge.source, edge.source_category)
+            if isinstance(edge.target, list):
+                edge.target_category = [
+                    category_map.get(t, "unknown") for t in edge.target
+                ]
+            else:
+                edge.target_category = category_map.get(edge.target, edge.target_category)
+
+            # 5) If the predicate is not valid for the new edge_type, keep
+            #    the edge but flag it. A reextract worker (see
+            #    ReextractService) picks up transitioning edges and fills
+            #    in a schema-valid predicate + motion attrs. Dropping the
+            #    edge here would hide it from the flipped node's Related
+            #    Edges panel and prevent the reextract from running.
+            if not predicate_valid_for_type(edge.predicate, new_type):
+                note = (
+                    f"Predicate '{edge.predicate}' is not valid for "
+                    f"'{new_type}'; awaiting auto re-extraction"
+                )
+                if not edge.validation_reasoning_round2:
+                    edge.validation_reasoning_round2 = note
+
+            reconciled.append(edge)
+
+        return reconciled
 
     async def get_created_edges(self, revision_map: dict = None) -> list[EdgeResponse]:
         """Get all newly created edges as EdgeResponse objects.
@@ -397,25 +699,30 @@ class AnnotationService:
             source = json.loads(rev.new_source) if rev.new_source else []
             target = json.loads(rev.new_target) if rev.new_target else []
             predicate = rev.new_predicate or ""
-            time_period_dict = rev.new_time_period or {"start_frame": 0, "end_frame": 0}
+            time_periods_dict = (
+                rev.new_time_periods
+                or ([rev.new_time_period] if rev.new_time_period else None)
+                or [{"start_frame": 0, "end_frame": 0}]
+            )
             attributes_dict = rev.new_attributes
             revision_action = "create"
 
-            # Check if there's a later modification for this edge
+            # Check if there's a later accepted/modified state for this edge
             if revision_map and rev.edge_id in revision_map:
                 latest_rev = revision_map[rev.edge_id]
-                if latest_rev.action == "modify":
-                    revision_action = "modify"
-                    # Apply modifications
-                    if latest_rev.new_predicate:
+                if latest_rev.action in ("modify", "accept"):
+                    revision_action = latest_rev.action
+                    if latest_rev.new_predicate is not None:
                         predicate = latest_rev.new_predicate
-                    if latest_rev.new_time_period:
-                        time_period_dict = latest_rev.new_time_period
-                    if latest_rev.new_attributes:
+                    if latest_rev.new_time_periods is not None:
+                        time_periods_dict = latest_rev.new_time_periods
+                    elif latest_rev.new_time_period is not None:
+                        time_periods_dict = [latest_rev.new_time_period]
+                    if latest_rev.new_attributes is not None:
                         attributes_dict = latest_rev.new_attributes
-                    if latest_rev.new_source:
+                    if latest_rev.new_source is not None:
                         source = json.loads(latest_rev.new_source)
-                    if latest_rev.new_target:
+                    if latest_rev.new_target is not None:
                         target = json.loads(latest_rev.new_target)
 
             # Look up categories from node data
@@ -436,7 +743,8 @@ class AnnotationService:
                 source_category = source_category[0] if len(source_category) == 1 else source_category
                 target_category = target_category[0] if len(target_category) == 1 else target_category
 
-            time_period = TimePeriod(**time_period_dict)
+            time_periods = [TimePeriod(**tp) for tp in time_periods_dict]
+            time_period = self._merge_time_periods(time_periods)
 
             attributes = None
             if rev.edge_type == "dynamic" and attributes_dict:
@@ -459,6 +767,7 @@ class AnnotationService:
                     validation_reasoning_round1="Human annotated",
                     validation_reasoning_round2="",
                     time_period=time_period,
+                    time_periods=time_periods,
                     attributes=attributes,
                     has_revision=True,
                     revision_action=revision_action,
@@ -466,3 +775,15 @@ class AnnotationService:
             )
 
         return edges
+
+    @staticmethod
+    def _merge_time_periods(periods: list) -> "TimePeriod":
+        """Compute a union TimePeriod from a list."""
+        from backend.models.schemas import TimePeriod
+
+        if not periods:
+            return TimePeriod(start_frame=0, end_frame=0)
+        return TimePeriod(
+            start_frame=min(p.start_frame for p in periods),
+            end_frame=max(p.end_frame for p in periods),
+        )

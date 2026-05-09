@@ -3,6 +3,7 @@ import * as d3 from 'd3';
 import type { Edge, TimePeriod } from '../../types';
 import { useAppStore, useCurrentFrame, useSelectedEdge, useCurrentUser, useCurrentVideo } from '../../store';
 import { useModifyEdge } from '../../hooks/useVideo';
+import { getEdgeStartFrame } from '../../utils/edgeFrame';
 
 interface EdgeTimelineProps {
   edges: Edge[];
@@ -317,6 +318,14 @@ export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
     sortedEdges.forEach((edge, i) => {
       const y = MARGIN.top + i * (LANE_HEIGHT + LANE_PADDING);
       const edgePeriods = getEdgeTimePeriods(edge);
+      const leftRevisionDotColor = edge.has_revision
+        ? {
+            accept: '#22c55e',
+            modify: '#22c55e',
+            reject: '#ef4444',
+          }[edge.revision_action || '']
+        : undefined;
+      const showLeftReviewedDot = Boolean(leftRevisionDotColor);
 
       const isSelected = selectedEdge?.edge_id === edge.edge_id;
       const color = EDGE_TYPE_COLORS[edge.edge_type];
@@ -324,9 +333,11 @@ export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
       const edgeGroup = g.append('g').attr('class', 'edge-group');
 
       // Edge label (left side)
-      edgeGroup.append('text')
-        .attr('x', MARGIN.left - 10)
-        .attr('y', y + LANE_HEIGHT / 2 + 4)
+      const labelX = MARGIN.left - 10;
+      const labelY = y + LANE_HEIGHT / 2 + 4;
+      const labelText = edgeGroup.append('text')
+        .attr('x', labelX)
+        .attr('y', labelY)
         .attr('text-anchor', 'end')
         .attr('font-size', '11px')
         .attr('fill', isSelected ? '#22c55e' : '#d1d5db')
@@ -334,9 +345,18 @@ export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
         .text(`${edge.predicate}`)
         .on('click', () => {
           setSelectedEdge(edge);
-          const start = edgePeriods[0]?.start_frame ?? edge.time_period.start_frame;
-          setCurrentFrame(start);
+          setCurrentFrame(getEdgeStartFrame(edge));
         });
+
+      if (showLeftReviewedDot && leftRevisionDotColor) {
+        const labelWidth = labelText.node()?.getComputedTextLength() ?? 0;
+        edgeGroup.append('circle')
+          .attr('cx', labelX - labelWidth - 10)
+          .attr('cy', labelY - 4)
+          .attr('r', 4)
+          .attr('fill', leftRevisionDotColor)
+          .attr('pointer-events', 'none');
+      }
 
       edgePeriods.forEach((period, segmentIndex) => {
         const isDragging =
@@ -379,7 +399,10 @@ export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
           .on('click', (event) => {
             event.stopPropagation();  // Prevent overlay from also handling
             setSelectedEdge(edge);
-            setCurrentFrame(period.start_frame);
+            const [mouseX] = d3.pointer(event);
+            const clickedFrame = Math.round(xScale.invert(mouseX));
+            const clampedFrame = Math.max(startFrame, Math.min(endFrame, clickedFrame));
+            setCurrentFrame(clampedFrame);
           })
           .on('mouseover', function() {
             if (!isDragging) d3.select(this).attr('fill-opacity', 1);
@@ -451,7 +474,7 @@ export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
         }
 
         // Revision indicator
-        if (edge.has_revision && isLastSegment) {
+        if (edge.has_revision && isLastSegment && !showLeftReviewedDot) {
           const revColor = {
             accept: '#22c55e',
             reject: '#ef4444',
@@ -594,8 +617,14 @@ export function EdgeTimeline({ edges, totalFrames }: EdgeTimelineProps) {
         </div>
       </div>
 
-      {/* Timeline */}
-      <div ref={containerRef} className="overflow-auto flex-1" style={{ maxHeight: containerHeight }}>
+      {/* Timeline — scrollbarGutter: stable keeps this inner width
+          identical to TrackletTimeline's regardless of whether either
+          list overflows, so the two x-scales align. */}
+      <div
+        ref={containerRef}
+        className="overflow-auto flex-1"
+        style={{ maxHeight: containerHeight, scrollbarGutter: 'stable' }}
+      >
         <svg ref={svgRef} width="100%" height={contentHeight} />
       </div>
     </div>

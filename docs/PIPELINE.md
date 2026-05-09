@@ -19,8 +19,6 @@ The current system has a **single user type** (no role hierarchy yet):
 - No authentication layer (proof-of-concept)
 - All annotations tracked to `user_id` for attribution
 
-**Future Enhancement**: Could add `Reviewer` role for quality control, `Admin` for system management.
-
 ---
 
 ## Pipeline Stages
@@ -32,18 +30,32 @@ The current system has a **single user type** (no role hierarchy yet):
 │  - Static scene graph (spatial relations)                       │
 │  - Dynamic scene graph (action relations)                       │
 │  - Foreground-background relations                              │
+│  Output: {video_id}/outputs/video_scene_graph.json              │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  STAGE 2: IMPORT                                                │
 │  scripts/import_vsg.py                                          │
-│  - Discovers VSG files from pvsg_mini/ directory                │
+│  - Discovers VSG files from PVSG_MINI_PATH directory            │
+│  - Accepts both video_scene_graph.json and                      │
+│    video_scene_graph_*.json (timestamped) filenames             │
 │  - Creates Video records in database (status="pending")         │
 │  - Stores paths to VSG file, video frames, masks                │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  STAGE 3: HUMAN REVIEW & ANNOTATION                             │
+│  STAGE 3: AI ASSIST (Optional)                                  │
+│  POST /api/ai/suggest-attributes                                │
+│  POST /api/ai/suggest-edge                                      │
+│  - Default provider: Gemini (google/gemini-3-flash-preview)     │
+│  - Fallback provider: OpenAI (gpt-5.2)                          │
+│  - Both via bd.ctis.site proxy (unified API_KEY)                │
+│  - Suggests node attributes (color, texture, material, etc.)    │
+│  - Suggests edge predicates and motion attributes               │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  STAGE 4: HUMAN REVIEW & ANNOTATION                             │
 │  Frontend web app (React + TypeScript)                          │
 │  - Annotators review edges on video frames                      │
 │  - Four actions: Accept, Reject, Modify, Create                 │
@@ -51,12 +63,23 @@ The current system has a **single user type** (no role hierarchy yet):
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  STAGE 4: EXPORT                                                │
+│  STAGE 5: EXPORT                                                │
 │  GET /api/export/{video_id}/download                            │
 │  - Applies all revisions to original VSG                        │
 │  - Outputs final annotated VSG JSON file                        │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Dataset
+
+**Current dataset**: `pvsg_annotated_40`
+- **Path**: `/u/jtu9/scratch/sgg/ai_pipeline/pvsg_annotated_40`
+- **Size**: 40 videos (20 ego4d + 20 epic_kitchen)
+- **Configured via**: `PVSG_MINI_PATH` in `.env`
+
+**VSG filename**: `video_scene_graph.json` (no timestamp suffix)
 
 ---
 
@@ -82,6 +105,8 @@ The current system has a **single user type** (no role hierarchy yet):
 | `users` | Annotator accounts (username, created_at) |
 | `videos` | Video metadata, paths to VSG/frames/masks, status |
 | `edge_revisions` | Complete audit trail of all annotations |
+| `node_revisions` | Node attribute modifications |
+| `metadata_revisions` | Scene/camera metadata changes |
 
 **EdgeRevision Fields:**
 - `video_id`, `edge_id`, `edge_type`
@@ -92,7 +117,7 @@ The current system has a **single user type** (no role hierarchy yet):
 
 ### 2. Original VSG Files (Read-Only)
 
-- Location: `pvsg_mini/{dataset}/{video_id}/video_scene_graph.json`
+- Location: `{PVSG_MINI_PATH}/{video_id}/outputs/video_scene_graph.json`
 - Never modified directly
 - All changes stored as revisions in database
 
@@ -122,6 +147,11 @@ AI-Generated VSG (JSON)
 │  - Provides nodes, edges, metadata                       │
 └─────────────────────────────────────────────────────────┘
         │
+        ├──► AI Service (optional)
+        │    POST /api/ai/suggest-attributes
+        │    POST /api/ai/suggest-edge
+        │    - Gemini 3 Flash (default) via bd.ctis.site
+        │
         ▼
 ┌─────────────────────────────────────────────────────────┐
 │  AnnotationService (backend/services/annotation_service.py)  │
@@ -145,6 +175,29 @@ AI-Generated VSG (JSON)
 
 ---
 
+## AI Assist
+
+The AI assist feature uses a unified proxy API (`bd.ctis.site`) with a single `API_KEY`.
+
+| Provider | Model | API Type |
+|----------|-------|----------|
+| **Gemini** (default) | `google/gemini-3-flash-preview` | OpenAI Responses API |
+| OpenAI | `gpt-5.2` | Chat Completions API |
+
+**Configuration** (`.env`):
+```env
+API_KEY=sk-...
+```
+
+**Endpoints:**
+- `POST /api/ai/suggest-attributes` — node color, texture, material, size, shape, age
+- `POST /api/ai/suggest-edge` — edge predicate and motion attributes
+- `GET /api/ai/health` — check API key and active provider
+
+The provider can be switched at runtime from the UI dropdown (Gemini / OpenAI).
+
+---
+
 ## Key API Endpoints
 
 | Endpoint | Purpose |
@@ -157,6 +210,8 @@ AI-Generated VSG (JSON)
 | `POST /api/annotations/create` | Create new edge |
 | `GET /api/export/{video_id}/download` | Download final VSG |
 | `GET /api/export/{video_id}/summary` | Preview revision stats |
+| `POST /api/ai/suggest-attributes` | AI node attribute suggestions |
+| `POST /api/ai/suggest-edge` | AI edge suggestions |
 
 ---
 
@@ -164,24 +219,17 @@ AI-Generated VSG (JSON)
 
 | File | Purpose |
 |------|---------|
-| `backend/models/database.py` | SQLAlchemy models (User, Video, EdgeRevision) |
+| `backend/models/database.py` | SQLAlchemy models (User, Video, EdgeRevision, NodeRevision) |
 | `backend/core/vsg_loader.py` | Parse and cache VSG JSON files |
 | `backend/services/annotation_service.py` | Handle annotation actions |
 | `backend/core/revision_tracker.py` | Record revisions to database |
 | `backend/services/export_service.py` | Generate final annotated VSG |
-| `scripts/import_vsg.py` | Import VSG files to database |
-
----
-
-## Additional Components
-
-| File | Purpose |
-|------|---------|
-| `backend/core/edge_manager.py` | Edge filtering and analysis |
-| `backend/core/schema_validator.py` | Jan20 schema validation |
-| `backend/services/video_service.py` | Frame extraction and caching |
+| `backend/services/ai_service.py` | Gemini / OpenAI AI suggestions |
 | `backend/config.py` | Application settings |
-| `scripts/cache_manager.py` | Frame cache operations |
+| `scripts/import_vsg.py` | Import VSG files to database |
+| `bash_scripts/ensure_servers.sh` | Start/health-check servers |
+| `bash_scripts/reload_videos.sh` | Re-import data and restart |
+| `bash_scripts/stop_servers.sh` | Stop both servers |
 
 ---
 
@@ -191,3 +239,4 @@ AI-Generated VSG (JSON)
 - **Multi-Annotator**: Same video can be reviewed by multiple users; export can filter by user_id
 - **Schema Validation**: Enforces Jan20 format constraints on predicates and motion attributes
 - **Frame Caching**: Video frames cached on disk for performance
+- **VSG Discovery**: Supports both `video_scene_graph.json` and `video_scene_graph_*.json` filenames

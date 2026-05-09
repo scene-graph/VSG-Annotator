@@ -35,21 +35,21 @@ export function Filters({ videoId }: FiltersProps) {
   const hasActiveFilters = Object.values(filters).some((v) => v !== undefined);
 
   return (
-    <div className="bg-gray-800 rounded-lg p-4 space-y-4">
+    <div className="bg-gray-800 rounded-lg p-2 space-y-3">
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center justify-between"
       >
         <div className="flex items-center gap-2">
           <svg
-            className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+            className={`w-3.5 h-3.5 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
           >
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
-          <span className="text-white font-semibold">Filters</span>
+          <span className="text-gray-300 text-sm font-semibold">Filters</span>
           {hasActiveFilters && !isOpen && (
             <span className="w-2 h-2 bg-blue-500 rounded-full" />
           )}
@@ -57,7 +57,7 @@ export function Filters({ videoId }: FiltersProps) {
         {hasActiveFilters && isOpen && (
           <span
             onClick={(e) => { e.stopPropagation(); clearFilters(); }}
-            className="text-gray-400 hover:text-white text-sm"
+            className="text-gray-400 hover:text-white text-xs"
           >
             Clear all
           </span>
@@ -65,23 +65,23 @@ export function Filters({ videoId }: FiltersProps) {
       </button>
 
       {isOpen && (
-        <div className="space-y-4 pt-2">
+        <div className="space-y-3 pt-2">
           {/* Stats display */}
           {stats && (
-            <div className="grid grid-cols-4 gap-2 text-center text-sm">
-              <div className="bg-gray-700 rounded p-2">
+            <div className="grid grid-cols-4 gap-2 text-center text-xs">
+              <div className="bg-gray-700 rounded p-1.5">
                 <div className="text-white font-semibold">{stats.total}</div>
                 <div className="text-gray-400 text-xs">Total</div>
               </div>
-              <div className="bg-gray-700 rounded p-2">
+              <div className="bg-gray-700 rounded p-1.5">
                 <div className="text-gray-400 font-semibold">{stats.static}</div>
                 <div className="text-gray-500 text-xs">Static</div>
               </div>
-              <div className="bg-gray-700 rounded p-2">
+              <div className="bg-gray-700 rounded p-1.5">
                 <div className="text-orange-400 font-semibold">{stats.dynamic}</div>
                 <div className="text-gray-500 text-xs">Dynamic</div>
               </div>
-              <div className="bg-gray-700 rounded p-2">
+              <div className="bg-gray-700 rounded p-1.5">
                 <div className="text-purple-400 font-semibold">{stats.fg_bg}</div>
                 <div className="text-gray-500 text-xs">FG-BG</div>
               </div>
@@ -97,7 +97,7 @@ export function Filters({ videoId }: FiltersProps) {
                   key={String(type)}
                   onClick={() => updateFilter('edge_type', type)}
                   className={clsx(
-                    'flex-1 py-1 px-2 rounded text-sm transition-colors',
+                    'flex-1 py-0.5 px-1.5 rounded text-xs transition-colors',
                     filters.edge_type === type
                       ? 'bg-blue-600 text-white'
                       : 'bg-gray-700 text-gray-300 hover:bg-gray-600'

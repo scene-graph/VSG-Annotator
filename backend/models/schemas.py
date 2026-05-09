@@ -51,8 +51,9 @@ class NodeVisualAttributes(BaseModel):
 class NodePhysicalAttributes(BaseModel):
     """Physical attributes for a node."""
 
-    size: str = "medium"
-    shape: str = "unknown"
+    size: Optional[str] = None
+    shape: Optional[str] = None
+    age: Optional[str] = None
 
 
 class NodeAttributes(BaseModel):
@@ -88,6 +89,11 @@ class NodeResponse(BaseModel):
     is_static: bool
     attributes: NodeAttributes
     bboxes_by_frame: dict[str, BBox]
+    has_revision: bool = False
+    revision_action: Optional[str] = None
+    # Set to the VSG-original is_static value only when a revision has flipped it.
+    # Frontend uses this to render a "(now static)" / "(now dynamic)" badge.
+    original_is_static: Optional[bool] = None
 
 
 # ============================================================================
@@ -108,6 +114,7 @@ class EdgeBase(BaseModel):
     validation_reasoning_round1: str = ""
     validation_reasoning_round2: str = ""
     time_period: TimePeriod
+    time_periods: list[TimePeriod] = Field(default_factory=list)
 
 
 class StaticEdge(EdgeBase):
@@ -159,11 +166,19 @@ class EdgeResponse(BaseModel):
     validation_reasoning_round1: str
     validation_reasoning_round2: str
     time_period: TimePeriod
+    time_periods: list[TimePeriod] = Field(default_factory=list)
     attributes: Optional[MotionAttributes] = None
 
     # Revision tracking
     has_revision: bool = False
     revision_action: Optional[str] = None
+
+    # Membership removed by group-edge cleanup after a node static/dynamic
+    # flip. Empty unless the reclassification pass dropped members — lets
+    # the UI keep those edges visible under the flipped node's "Related
+    # Edges" section with a "removed after type flip" marker.
+    pruned_sources: list[str] = Field(default_factory=list)
+    pruned_targets: list[str] = Field(default_factory=list)
 
 
 # ============================================================================
@@ -228,6 +243,12 @@ class AnnotationAccept(BaseModel):
     edge_id: str
     edge_type: Literal["static", "dynamic", "fg_bg"]
     user_id: int
+    new_predicate: Optional[str] = None
+    new_time_period: Optional[TimePeriod] = None
+    new_time_periods: Optional[list[TimePeriod]] = None
+    new_attributes: Optional[MotionAttributes] = None
+    new_source: Optional[str | list[str]] = None
+    new_target: Optional[str | list[str]] = None
     notes: Optional[str] = None
 
 
@@ -250,6 +271,7 @@ class AnnotationModify(BaseModel):
     user_id: int
     new_predicate: Optional[str] = None
     new_time_period: Optional[TimePeriod] = None
+    new_time_periods: Optional[list[TimePeriod]] = None
     new_attributes: Optional[MotionAttributes] = None
     new_source: Optional[str | list[str]] = None
     new_target: Optional[str | list[str]] = None
@@ -266,6 +288,7 @@ class AnnotationCreate(BaseModel):
     target: str | list[str]
     predicate: str
     time_period: TimePeriod
+    time_periods: Optional[list[TimePeriod]] = None
     attributes: Optional[MotionAttributes] = None
     notes: Optional[str] = None
 
@@ -293,6 +316,8 @@ class RevisionResponse(BaseModel):
     new_predicate: Optional[str]
     original_time_period: Optional[dict]
     new_time_period: Optional[dict]
+    original_time_periods: Optional[list]
+    new_time_periods: Optional[list]
     original_attributes: Optional[dict]
     new_attributes: Optional[dict]
     review_notes: Optional[str]
@@ -444,6 +469,8 @@ class NodeModify(BaseModel):
     user_id: int
     new_visual_attributes: Optional[NodeVisualAttributes] = None
     new_physical_attributes: Optional[NodePhysicalAttributes] = None
+    new_is_static: Optional[bool] = None
+    new_category: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -457,5 +484,9 @@ class NodeRevisionResponse(BaseModel):
     username: str
     original_attributes: Optional[dict[str, Any]]
     new_attributes: Optional[dict[str, Any]]
+    original_is_static: Optional[bool] = None
+    new_is_static: Optional[bool] = None
+    original_category: Optional[str] = None
+    new_category: Optional[str] = None
     review_notes: Optional[str]
     created_at: datetime

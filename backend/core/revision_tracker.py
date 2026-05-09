@@ -48,6 +48,18 @@ class RevisionTracker:
         if video is None:
             raise ValueError(f"Video not found: {annotation.video_id}")
 
+        new_time_periods = None
+        if annotation.new_time_periods is not None:
+            new_time_periods = [tp.model_dump() for tp in annotation.new_time_periods]
+        elif annotation.new_time_period is not None:
+            new_time_periods = [annotation.new_time_period.model_dump()]
+
+        new_time_period = None
+        if new_time_periods:
+            new_time_period = self._merge_time_periods(new_time_periods)
+        elif annotation.new_time_period is not None:
+            new_time_period = annotation.new_time_period.model_dump()
+
         revision = EdgeRevision(
             video_id=video.id,
             edge_id=annotation.edge_id,
@@ -55,14 +67,33 @@ class RevisionTracker:
             user_id=annotation.user_id,
             action="accept",
             original_predicate=original_edge.predicate,
+            new_predicate=annotation.new_predicate,
             original_time_period=original_edge.time_period.model_dump(),
+            original_time_periods=self._edge_time_periods(original_edge),
+            new_time_period=new_time_period,
+            new_time_periods=new_time_periods,
             original_attributes=(
                 original_edge.attributes.model_dump()
                 if original_edge.attributes
                 else None
             ),
+            new_attributes=(
+                annotation.new_attributes.model_dump()
+                if annotation.new_attributes
+                else None
+            ),
             original_source=json.dumps(original_edge.source),
+            new_source=(
+                json.dumps(annotation.new_source)
+                if annotation.new_source is not None
+                else None
+            ),
             original_target=json.dumps(original_edge.target),
+            new_target=(
+                json.dumps(annotation.new_target)
+                if annotation.new_target is not None
+                else None
+            ),
             review_notes=annotation.notes,
         )
 
@@ -86,6 +117,7 @@ class RevisionTracker:
             action="reject",
             original_predicate=original_edge.predicate,
             original_time_period=original_edge.time_period.model_dump(),
+            original_time_periods=self._edge_time_periods(original_edge),
             original_attributes=(
                 original_edge.attributes.model_dump()
                 if original_edge.attributes
@@ -108,6 +140,18 @@ class RevisionTracker:
         if video is None:
             raise ValueError(f"Video not found: {annotation.video_id}")
 
+        new_time_periods = None
+        if annotation.new_time_periods is not None:
+            new_time_periods = [tp.model_dump() for tp in annotation.new_time_periods]
+        elif annotation.new_time_period is not None:
+            new_time_periods = [annotation.new_time_period.model_dump()]
+
+        new_time_period = None
+        if new_time_periods:
+            new_time_period = self._merge_time_periods(new_time_periods)
+        elif annotation.new_time_period is not None:
+            new_time_period = annotation.new_time_period.model_dump()
+
         revision = EdgeRevision(
             video_id=video.id,
             edge_id=annotation.edge_id,
@@ -117,11 +161,9 @@ class RevisionTracker:
             original_predicate=original_edge.predicate,
             new_predicate=annotation.new_predicate,
             original_time_period=original_edge.time_period.model_dump(),
-            new_time_period=(
-                annotation.new_time_period.model_dump()
-                if annotation.new_time_period
-                else None
-            ),
+            original_time_periods=self._edge_time_periods(original_edge),
+            new_time_period=new_time_period,
+            new_time_periods=new_time_periods,
             original_attributes=(
                 original_edge.attributes.model_dump()
                 if original_edge.attributes
@@ -201,6 +243,13 @@ class RevisionTracker:
         existing_count = len(result.scalars().all())
         edge_id = f"{edge_prefix}{existing_count + 1:03d}"
 
+        new_time_periods = None
+        if annotation.time_periods is not None:
+            new_time_periods = [tp.model_dump() for tp in annotation.time_periods]
+        else:
+            new_time_periods = [annotation.time_period.model_dump()]
+        merged_time_period = self._merge_time_periods(new_time_periods)
+
         revision = EdgeRevision(
             video_id=video.id,
             edge_id=edge_id,
@@ -208,7 +257,8 @@ class RevisionTracker:
             user_id=annotation.user_id,
             action="create",
             new_predicate=annotation.predicate,
-            new_time_period=annotation.time_period.model_dump(),
+            new_time_period=merged_time_period,
+            new_time_periods=new_time_periods,
             new_attributes=(
                 annotation.attributes.model_dump()
                 if annotation.attributes
@@ -253,6 +303,8 @@ class RevisionTracker:
                     new_predicate=revision.new_predicate,
                     original_time_period=revision.original_time_period,
                     new_time_period=revision.new_time_period,
+                    original_time_periods=revision.original_time_periods,
+                    new_time_periods=revision.new_time_periods,
                     original_attributes=revision.original_attributes,
                     new_attributes=revision.new_attributes,
                     review_notes=revision.review_notes,
@@ -342,7 +394,11 @@ class RevisionTracker:
     # =========================================================================
 
     async def record_node_modify(
-        self, modification: NodeModify, original_attributes: dict
+        self,
+        modification: NodeModify,
+        original_attributes: dict,
+        original_is_static: Optional[bool],
+        original_category: Optional[str] = None,
     ) -> NodeRevision:
         """Record a node attribute modification."""
         video = await self.get_video_by_video_id(modification.video_id)
@@ -363,6 +419,10 @@ class RevisionTracker:
             action="modify",
             original_attributes=original_attributes,
             new_attributes=new_attributes,
+            original_is_static=original_is_static,
+            new_is_static=modification.new_is_static,
+            original_category=original_category,
+            new_category=modification.new_category,
             review_notes=modification.notes,
         )
 
@@ -399,6 +459,10 @@ class RevisionTracker:
                     username=user.username,
                     original_attributes=revision.original_attributes,
                     new_attributes=revision.new_attributes,
+                    original_is_static=revision.original_is_static,
+                    new_is_static=revision.new_is_static,
+                    original_category=revision.original_category,
+                    new_category=revision.new_category,
                     review_notes=revision.review_notes,
                     created_at=revision.created_at,
                 )
@@ -425,3 +489,19 @@ class RevisionTracker:
         )
 
         return result.scalar_one_or_none()
+
+    @staticmethod
+    def _edge_time_periods(edge: EdgeResponse) -> list[dict]:
+        """Normalize edge time periods into a list of dicts."""
+        if edge.time_periods:
+            return [tp.model_dump() for tp in edge.time_periods]
+        return [edge.time_period.model_dump()]
+
+    @staticmethod
+    def _merge_time_periods(time_periods: list[dict]) -> dict:
+        """Compute a union time period dict from a list."""
+        if not time_periods:
+            return {"start_frame": 0, "end_frame": 0}
+        start = min(tp.get("start_frame", 0) for tp in time_periods)
+        end = max(tp.get("end_frame", 0) for tp in time_periods)
+        return {"start_frame": start, "end_frame": end}

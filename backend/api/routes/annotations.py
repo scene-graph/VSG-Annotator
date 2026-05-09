@@ -21,6 +21,13 @@ from backend.models.schemas import (
 )
 from backend.services.annotation_service import AnnotationService
 
+
+async def mark_video_in_progress(db: AsyncSession, video: Video) -> None:
+    """Mark video as in_progress if not already completed."""
+    if video.status != "completed":
+        video.status = "in_progress"
+        db.add(video)
+
 router = APIRouter(prefix="/annotations", tags=["annotations"])
 
 
@@ -41,10 +48,11 @@ async def accept_edge(
         )
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=annotation.video_id)
 
     try:
         result = await service.accept_edge(annotation)
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -68,10 +76,11 @@ async def reject_edge(
         )
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=annotation.video_id)
 
     try:
         result = await service.reject_edge(annotation)
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -95,10 +104,11 @@ async def modify_edge(
         )
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=annotation.video_id)
 
     try:
         result = await service.modify_edge(annotation)
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -122,10 +132,11 @@ async def create_edge(
         )
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=annotation.video_id)
 
     try:
         result = await service.create_edge(annotation)
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -156,7 +167,7 @@ async def delete_edge(
         raise HTTPException(status_code=404, detail=f"User not found: {request.user_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=request.video_id)
 
     try:
         result = await service.delete_edge(
@@ -166,6 +177,7 @@ async def delete_edge(
             user_id=request.user_id,
             review_notes=request.review_notes,
         )
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -186,7 +198,7 @@ async def get_revision_history(
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=video_id)
 
     return await service.get_edge_history(video_id, edge_id)
 
@@ -215,10 +227,15 @@ async def modify_node(
         raise HTTPException(status_code=404, detail=f"User not found: {modification.user_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    # Pass the DB video_id explicitly — the VSG's metadata.video_id may
+    # differ from the canonical DB video_id, and revisions are stored
+    # against the DB one. Without this, the reclassification pass inside
+    # modify_node silently misses all node revisions.
+    service = AnnotationService(db, loader, video_id=modification.video_id)
 
     try:
         result = await service.modify_node(modification)
+        await mark_video_in_progress(db, video)
         await db.commit()
         return result
     except ValueError as e:
@@ -239,7 +256,7 @@ async def get_node_revision_history(
         raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
     loader = VSGLoader(video.vsg_path)
-    service = AnnotationService(db, loader)
+    service = AnnotationService(db, loader, video_id=video_id)
 
     return await service.get_node_history(video_id, node_id)
 
@@ -283,6 +300,7 @@ async def modify_scene_info(
     )
 
     db.add(revision)
+    await mark_video_in_progress(db, video)
     await db.commit()
     await db.refresh(revision)
 
@@ -328,6 +346,7 @@ async def modify_camera_motion(
     )
 
     db.add(revision)
+    await mark_video_in_progress(db, video)
     await db.commit()
     await db.refresh(revision)
 
