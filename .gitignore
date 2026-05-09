@@ -37,5 +37,33 @@ Thumbs.db
 *.log
 backend/annotation_db.sqlite
 
-# Frame cache
+# Frame cache (lazy PNG → JPEG transcode; multi-GB)
 .frame_cache/
+.frame_cache.bak*/
+
+# Local backups (DB snapshots, ad-hoc copies)
+*.bak
+*.bak.*
+*.backup
+
+# Local-only bash scripts (cluster-specific, not portable)
+bash_scripts/
+
+# Stale worker pyc dir (no source tracked)
+worker/
+
+# Belt-and-braces secrets guard (already covered by .env above)
+.env*
+!.env.example
+
+# Python virtual envs (variants)
+.venv*/
+env/
+
+# Frontend build / cache
+frontend/.vite/
+frontend/coverage/
+
+# Misc workspace state
+.cache/
+*.tmp
